@@ -99,9 +99,9 @@ func delimiterOf(text line) delimiter {
 // delimiters, whose lines carry no key, no marker and no indent.
 func isMetadata(region Source, of delimiter) bool {
 	if of == tomlFrontMatter {
-		return everyLineIsEntry(region, tomlEntry)
+		return everyLineIsEntry(region, tomlEntry, tomlKey)
 	}
-	return parsesAsMapping(region) || everyLineIsEntry(region, yamlEntry)
+	return parsesAsMapping(region) || everyLineIsEntry(region, yamlEntry, yamlKey)
 }
 
 // parsesAsMapping reports a region that decodes as a YAML mapping. An EMPTY
@@ -123,20 +123,35 @@ func parsesAsMapping(region Source) bool {
 // A TOML region has only this test, because a TOML parser is a dependency — and
 // a file format the standards ban elsewhere — bought for the fleet's single
 // `+++` block.
+//
+// The shapes are not enough on their own, which an adversarial review proved:
+// INDENTATION is one of them, so prose indented by a single space between two
+// `---` lines matched every line and deleted every finding in the region, while
+// rendering as what it is — two horizontal rules and the same paragraphs.
+// So a region must also CARRY A KEY at the margin. A document's own keys sit
+// there and everything beneath one is indented; a region of nothing but
+// continuation lines continues nothing.
 var (
 	yamlEntry = regexp.MustCompile(`^(?:[ \t]|#|[^\s:]+[ \t]*:)`)
+	yamlKey   = regexp.MustCompile(`^[^\s:]+[ \t]*:`)
 	tomlEntry = regexp.MustCompile(`^(?:[ \t]|#|\[[^\]]*\]|[^=\s\[]+[ \t]*=)`)
+	tomlKey   = regexp.MustCompile(`^(?:\[[^\]]*\]|[^=\s\[]+[ \t]*=)`)
 )
 
 // everyLineIsEntry reports a region whose every non-blank line is one of its
-// language's shapes.
-func everyLineIsEntry(region Source, entry *regexp.Regexp) bool {
+// language's shapes AND which carries at least one key of its own.
+func everyLineIsEntry(region Source, entry, key *regexp.Regexp) bool {
+	isKeyed := false
 	for _, text := range strings.Split(string(region), "\n") {
-		if strings.TrimSpace(text) != "" && !entry.MatchString(text) {
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if !entry.MatchString(text) {
 			return false
 		}
+		isKeyed = isKeyed || key.MatchString(text)
 	}
-	return true
+	return isKeyed
 }
 
 // afterDelimiter is the region up to the next line that is this delimiter alone,

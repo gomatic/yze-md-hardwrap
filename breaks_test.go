@@ -193,3 +193,52 @@ func TestACrlfBreakIsStillTheSameBreak(t *testing.T) {
 		assert.Len(t, analyze(t, "notes.md", document), 1, "and the unconfigured run reports it")
 	}
 }
+
+// TestANewlineInsideAnInlineNodeIsStillALineEnding pins the hole a second
+// adversarial review found, which was worse than the spellings this rule stopped
+// exempting.
+//
+// A parser reports a break BETWEEN two pieces of text. A newline inside a raw
+// HTML comment, a link title, an inline tag or a code span falls INSIDE one
+// inline node, so it was no break at all — and `prose <!--` / `--> more prose`
+// is a hard-wrapped paragraph that renders as one line, needs no configuration,
+// leaves no trace in review, and reported nothing. Unlike a trailing backslash
+// it is invisible in the OUTPUT as well, so a reader cannot even see it being
+// used.
+func TestANewlineInsideAnInlineNodeIsStillALineEnding(t *testing.T) {
+	t.Parallel()
+
+	for name, document := range map[string]string{
+		"an html comment":     "This is prose <!--\n--> that is hard wrapped.\n",
+		"an inline tag":       "Some prose <span\nclass=\"x\">here</span> and more.\n",
+		"a link title":        "See [x](http://example.com \"a title\nthat wraps\") and more.\n",
+		"a code span":         "text with `a code\nspan` inside it\n",
+		"inside a list item":  "- item <!--\n  --> wrapped\n",
+		"inside a quotation":  "> quoted <!--\n> --> wrapped\n",
+		"chained twice":       "prose <!--\n--> more <!--\n--> and more\n",
+		"a link across lines": "See [the\ndocs](http://example.com) here.\n",
+	} {
+		diags := analyze(t, "notes.md", document)
+		require.Len(t, diags, 1, "%s spans more than one line", name)
+		assert.Equal(t, []int{1}, linesOf(diags), "%s is reported at the line that wraps", name)
+		assert.Len(t, analyzeAuthored(t, document), 1,
+			"%s is not one of the format's own break spellings, so the configured run reports it too", name)
+	}
+}
+
+// TestOnlyTheFirstBLOCKOfAQuotationOpensAnAlert pins the second half of the
+// alert exemption, found by the same review. GitHub opens an alert on the very
+// first line of a blockquote and nowhere else, so a marker in a SECOND paragraph
+// of the same quotation renders as the bracketed word and nothing more —
+// exempting it granted the exemption exactly where the construct it protects
+// does not exist.
+func TestOnlyTheFirstBLOCKOfAQuotationOpensAnAlert(t *testing.T) {
+	t.Parallel()
+
+	diags := analyze(t, "notes.md", "> an ordinary quoted intro\n>\n> [!NOTE]\n> prose that is\n> hard wrapped\n")
+
+	require.Len(t, diags, 1, "the second block of the quotation is not an alert")
+	assert.Equal(t, []int{3}, linesOf(diags))
+	assert.Empty(t, analyze(t, "notes.md", "> [!NOTE]\n> the whole warning on one line\n"),
+		"and a real alert is still structural")
+}

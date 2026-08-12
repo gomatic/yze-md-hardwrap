@@ -40,18 +40,27 @@ func (d scanned) reports(node ast.Node, at lineBreak) bool {
 	if d.opensAlert(node, at.at, text) {
 		return false
 	}
-	return d.breaks != AuthoredBreaks || !at.isAuthored(text)
+	return d.breaks != AuthoredBreaks || !isAuthored(text)
 }
 
-// isAuthored reports a break the FORMAT spells as one meant to be seen.
+// isAuthored reports a break the FORMAT spells as one meant to be seen: the two
+// spellings CommonMark defines, decided from the line itself.
 //
-// The parser has already answered most of it. What it gets wrong is a run of
-// backslashes: CommonMark resolves the escapes first, so an odd run leaves a
-// lone backslash against the newline and the break is visible, while goldmark
-// decides from the last two characters and calls a run of three escaped text.
-func (b lineBreak) isAuthored(text line) bool {
-	return bool(b.isHard) || trailingBackslashes(text)%2 == 1
+// It is read from the TEXT rather than taken from the parser's own answer,
+// because the parser is asked a different question — it reports a break between
+// two pieces of text, and a line ending this rule now finds is one the parser
+// may not have called a break at all. Deciding it here keeps one rule for one
+// question. The backslash half is also where goldmark is wrong: CommonMark
+// resolves the escapes first, so an ODD run leaves a lone backslash against the
+// newline and the break is visible, while goldmark decides from the last two
+// characters and calls a run of three escaped text.
+func isAuthored(text line) bool {
+	return strings.HasSuffix(string(text), hardBreakSpelling) || trailingBackslashes(text)%2 == 1
 }
+
+// hardBreakSpelling is CommonMark's other hard break: two or more spaces before
+// the newline. Two is the whole of it — a longer run ends with this one.
+const hardBreakSpelling = "  "
 
 // alertMarkers are the five GitHub alert types. The marker must stand ALONE on
 // the first line of its blockquote, so the newline after it is structural: join
@@ -70,20 +79,26 @@ var alertMarkers = map[line]bool{
 
 // opensAlert reports the marker line of a GitHub alert.
 //
-// Three conditions, and the third was a hole an adversarial review found: the
+// Four conditions, and two of them were holes adversarial reviews found: the
 // block sits in a blockquote (`[!NOTE]` in ordinary prose is a bracketed word,
-// and its newline really is decorative), the marker is the type GitHub defines,
-// and it is on the block's FIRST line. Only the first line of a blockquote
-// opens an alert; a second `> [!NOTE]` below it is literal body text, and
-// exempting that one silenced a genuine wrap.
+// and its newline really is decorative), it is the blockquote's FIRST block, the
+// position is on that block's first line, and the marker is a type GitHub
+// defines. Only the very first line of a blockquote opens an alert — a second
+// `> [!NOTE]` in the same paragraph is literal body text, and so is one in a
+// SECOND paragraph of the same quotation, which renders as the bracketed words
+// and nothing else. Each exemption granted where GitHub renders no alert is a
+// line of hard-wrapped prose nobody is told about.
 func (d scanned) opensAlert(node ast.Node, at byteOffset, text line) bool {
 	parent := node.Parent()
+	if parent == nil || parent.FirstChild() != node {
+		return false
+	}
 	// The blockquote's own markers are stripped because the line is read from
 	// the RAW document — the parser's segments have them removed already, but
 	// the raw line is what a position maps back to, and `> [!NOTE]` is the
 	// spelling on disk.
 	quoted := strings.TrimLeft(string(text), " \t>")
-	return parent != nil && parent.Kind() == ast.KindBlockquote && d.opensBlock(node, at) &&
+	return parent.Kind() == ast.KindBlockquote && d.opensBlock(node, at) &&
 		alertMarkers[line(strings.ToUpper(strings.TrimSpace(quoted)))]
 }
 

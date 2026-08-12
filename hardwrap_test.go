@@ -107,10 +107,9 @@ func TestEveryWrappingConstructIsNamedByItsOwnKind(t *testing.T) {
 	t.Parallel()
 
 	for name, document := range map[string]string{
-		"paragraph":  "wrapped over\ntwo lines\n",
-		"list item":  "- an item that is\n  wrapped\n",
-		"heading":    "a setext title that is\nwrapped\n=======================\n",
-		"definition": "Term\n: a definition that is\n  wrapped\n",
+		"paragraph": "wrapped over\ntwo lines\n",
+		"list item": "- an item that is\n  wrapped\n",
+		"heading":   "a setext title that is\nwrapped\n=======================\n",
 	} {
 		diags := analyze(t, "notes.md", document)
 		require.Len(t, diags, 1, "%s wraps", name)
@@ -118,13 +117,24 @@ func TestEveryWrappingConstructIsNamedByItsOwnKind(t *testing.T) {
 	}
 }
 
-// TestADefinitionTermCannotWrap pins why no finding names one: each line above
-// a `:` is a term of its own, so two lines are two terms rather than one term
-// wrapped.
-func TestADefinitionTermCannotWrap(t *testing.T) {
+// TestADefinitionListIsOrdinaryProse pins a reversal, and the reason for it.
+//
+// The parser used to read definition lists, so that a `Term` / `: value` pair
+// was two blocks rather than one wrapped paragraph. Under that reading EVERY
+// line above a `:` is a term of its own — so appending one `: note` line to
+// twenty lines of hard-wrapped prose made twenty one-line terms, and the whole
+// passage went unreported. A second adversarial review found it, the fleet was
+// measured at ZERO definition lists, and the extension was removed: the
+// exemption protected nothing and cost a bypass anyone could type. GitHub
+// renders this text as one paragraph in the first place.
+func TestADefinitionListIsOrdinaryProse(t *testing.T) {
 	t.Parallel()
 
-	assert.Empty(t, analyze(t, "notes.md", "a term that is\nwrapped\n: its definition\n"))
+	assert.Len(t, analyze(t, "notes.md", "a term that is\nwrapped\n: its definition\n"), 1)
+	assert.Len(t, analyze(t, "notes.md", strings.Repeat("a line of ordinary prose\n", 20)+": note\n"), 1,
+		"and a trailing definition marker does not turn a passage into terms")
+	assert.Empty(t, analyze(t, "notes.md", "Term\n\n: its definition on one line\n"),
+		"while prose written one line per block is still silent, marker or no marker")
 }
 
 // TestAWrappedBlockquoteIsReportedOnce pins the containment of the walk: a
@@ -156,7 +166,6 @@ func TestConstructsThatMerelyLOOKLikeWrappedProseAreSilent(t *testing.T) {
 		"a numbered list":              "1. one\n2. two\n3. three\n",
 		"link reference definitions":   "[a]: http://a\n[b]: http://b\n[c]: http://c\n",
 		"footnote definitions":         "text[^1]\n\n[^1]: first note\n[^2]: second note\n",
-		"a definition list":            "Term\n: its definition\n\nOther\n: its definition\n",
 		"a fenced code block":          "```go\nfunc main() {\n}\n```\n",
 		"a tilde fence":                "~~~\nline one\nline two\n~~~\n",
 		"nested fences":                "````\n```\nline one\nline two\n```\n````\n",

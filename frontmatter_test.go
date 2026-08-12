@@ -65,6 +65,14 @@ func TestDelimitersAroundProseAreNotFrontMatter(t *testing.T) {
 		"metadata and then prose":       "---\ntitle: x\n\nA body that is\nwrapped.\n---\n",
 		"a list between delimiters":     "---\n- a body that is\n  wrapped\n---\n",
 		"a document between delimiters": "---\n# A title\nprose that is\nwrapped\n---\n",
+		// A second adversarial review's finding, and the same shape one indent
+		// further in: INDENTATION is one of the metadata line shapes, so prose
+		// indented by a single space matched every line of the region — with
+		// byte-identical rendered output, two horizontal rules and the same
+		// paragraphs. A region of continuation lines continues nothing.
+		"indented prose between yaml delimiters": "---\n\n A body that is\n wrapped.\n\n---\n",
+		"indented prose between toml delimiters": "+++\n\n A body that is\n wrapped.\n\n+++\n",
+		"an indented list between delimiters":    "---\n  - a body that is\n    wrapped\n---\n",
 	} {
 		assert.NotEmpty(t, analyze(t, "notes.md", document), "%s is not metadata", name)
 	}

@@ -121,3 +121,19 @@ func TestAnEntryNamingAPathIsRefused(t *testing.T) {
 		assert.Nil(t, docs, "a refused configuration yields no document set to run with")
 	}
 }
+
+// TestASetNamingNothingReadsMarkdown pins the direction a forgotten field fails
+// in, which an adversarial review found pointing the wrong way: the zero value
+// of a [hardwrap.Settings] carries a nil document set, and a run that read no
+// file under it would report a clean pass over every document in a repository —
+// the one outcome a gate must never produce, reached by omitting a field rather
+// than by any decision.
+func TestASetNamingNothingReadsMarkdown(t *testing.T) {
+	t.Parallel()
+
+	for name, docs := range map[string]hardwrap.Documents{"nil": nil, "empty": {}} {
+		assert.True(t, docs.Reads("README.md"), "a %s set is the default set, not a set that reads nothing", name)
+		assert.False(t, docs.Reads("main.go"), "and it reads no more than the default one")
+		assert.False(t, docs.Reads("LICENSE.md"), "a licence is still not ours to reflow")
+	}
+}

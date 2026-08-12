@@ -127,7 +127,17 @@ func isEntrySeparator(between separatorRune) bool {
 
 // Reads reports a path this run analyzes: a licence never, and otherwise any
 // file whose whole name or whose extension was configured.
+//
+// A set naming NOTHING is the default set rather than a set that reads nothing.
+// The zero value of a [Settings] carries a nil map, and a rule that read no file
+// under it would report a clean run over every document in a repository — the
+// one outcome a gate must never produce, reached by forgetting a field. The
+// defaults can only be added to, so this is the same refusal as the one that
+// keeps a configuration from turning markdown off.
 func (d Documents) Reads(at Path) bool {
+	if len(d) == 0 {
+		d = DefaultDocuments()
+	}
 	base := baseName(strings.ToLower(path.Base(string(at))))
 	if licenceStems[stemOf(base)] {
 		return false

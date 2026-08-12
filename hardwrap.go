@@ -36,17 +36,26 @@
 //
 // Three limits are known, measured and accepted rather than guessed at:
 //
-//   - A newline inside a multi-line code SPAN is not reported. The parser hands
-//     back one inline node for the whole span, so the break inside it is not a
-//     break between two pieces of the block's text.
+//   - Prose inside an HTML BLOCK is not judged. Its lines are markup a renderer
+//     passes through verbatim, and the standard governs a paragraph, a list
+//     item, a blockquote, a table row and a heading — an HTML block is none of
+//     them. Measured 2026-08-12: 1,775 multi-line HTML blocks fleet-wide, the
+//     first-party ones being Hugo layout blocks where a tag per line is the
+//     convention. Reporting them would tell an author to collapse markup.
 //   - A CR-only line ending (a pre-OSX Macintosh document) is not a line ending
-//     to a CommonMark parser, so such a document is one long line and reports
-//     nothing. Fleet count: zero.
+//     to the parser this rule uses, so such a document is one long line and
+//     reports nothing. CommonMark itself counts a lone carriage return as a
+//     line ending; goldmark does not. Fleet count: zero.
 //   - A Hugo shortcode (`{{< tabs >}}`) is ordinary paragraph text to a
 //     CommonMark parser, so a shortcode broken across lines is reported as a
 //     wrapped paragraph. Measured fleet-wide before it was left alone: zero
 //     shortcode use, so mechanizing it would have cost every run something to
 //     detect nothing.
+//
+// A DEFINITION LIST is deliberately not read as one — see [newParser]. Under the
+// extension, every line above a `:` is a term of its own, so one appended line
+// silenced a whole passage; the fleet holds none, and GitHub renders the same
+// text as one paragraph.
 package hardwrap
 
 import (
@@ -138,8 +147,11 @@ const findingLimit findingCount = 1000
 // its reader is looking for the cheapest way to make the gate green, so a
 // message that named a spelling the rule leaves alone would be a bypass
 // tutorial delivered by the tool itself, to the one audience most likely to
-// apply it mechanically to every line it touches. The same discipline binds
-// every string this command prints.
+// apply it mechanically to every line it touches. Every DIAGNOSTIC this package
+// emits is held to it, which a test asserts. The one string that does name the
+// break setting is [ErrBreaksSetting], printed on stderr when a configuration is
+// refused — its reader has already set the variable, and an error that will not
+// say which values exist is a worse trade than the one it avoids.
 const wrapMessage = "this %s spans %d source lines: a paragraph, list item, blockquote, table row or heading is " +
 	"written as ONE physical line, however long, because the renderer decides where a rendered line ends and " +
 	"a newline here only costs a diff line per reflow and a conflict per neighbouring edit; join them"
@@ -175,10 +187,9 @@ func countedDiagnostics(at Path, source Source, settings Settings) ([]goyze.Diag
 	if !settings.Documents.Reads(at) {
 		return nil, 0, nil
 	}
-	found := wrapped(at, text, settings.Breaks)
-	total := findingCount(len(found))
+	found, total := wrapped(at, text, settings.Breaks)
 	if total > findingLimit {
-		return append(found[:findingLimit], truncation(at, total)), total, nil
+		return append(found, truncation(at, total)), total, nil
 	}
 	return found, total, nil
 }
@@ -198,54 +209,6 @@ func readable(at Path, source Source) (Source, error) {
 		return "", ErrTooDeep.With(nil, "path", string(at), "depth", int(depth))
 	}
 	return text, nil
-}
-
-// nestingDepth is how many blockquote markers a line opens.
-type nestingDepth int
-
-// nestingLimit bounds how deeply a document may nest before this rule declines
-// to parse it.
-//
-// The SIZE bound does not bound the COST. A markdown parser opens one block
-// parser per container per line, so a document of nested blockquotes costs
-// roughly the square of its depth: 100,000 levels in 200 KB took six seconds,
-// and at the size limit the same shape would run for hours — a checked-in file
-// that hangs the gate, and a gate that can be hung is a gate that gets disabled.
-//
-// The number is twenty times the deepest nesting in the fleet's 4,859 markdown
-// files, which is THREE. It refuses only a document written to be refused, and
-// it refuses it as a FINDING rather than as a silence.
-const nestingLimit nestingDepth = 64
-
-// deepest is the greatest blockquote nesting any line of a document opens.
-func deepest(text Source) nestingDepth {
-	worst := nestingDepth(0)
-	for {
-		current, rest, ok := nextLine(text)
-		if !ok {
-			return worst
-		}
-		text = rest
-		if depth := markerDepth(current); depth > worst {
-			worst = depth
-		}
-	}
-}
-
-// markerDepth is how many blockquote markers open one line. Only the leading
-// run counts — a `>` in prose is a greater-than sign, not a container.
-func markerDepth(text line) nestingDepth {
-	depth := nestingDepth(0)
-	for _, marker := range text {
-		if marker == '>' {
-			depth++
-			continue
-		}
-		if marker != ' ' && marker != '\t' {
-			return depth
-		}
-	}
-	return depth
 }
 
 // truncation is the finding that replaces everything past the limit, so the

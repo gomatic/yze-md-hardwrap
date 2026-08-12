@@ -155,3 +155,86 @@ func TestADocumentExactlyAtItsLimitCarriesNoTruncationNotice(t *testing.T) {
 		assert.Contains(t, diag.Message, wrapMarker, "no notice among them")
 	}
 }
+
+// TestEveryKindOfContainerCountsTowardsTheNestingBound pins the bound against
+// the containers a second adversarial review found it was not counting. A
+// parser opens one block parser per container per line, so the cost is the
+// SQUARE of the depth however the depth is spelled: `- ` repeated fifty thousand
+// times is one 100 KB line that took sixteen seconds, and a document of steadily
+// indented list items took eighteen. Both are now refused in hundredths of a
+// second, as findings rather than silences.
+func TestEveryKindOfContainerCountsTowardsTheNestingBound(t *testing.T) {
+	t.Parallel()
+
+	for name, document := range map[string]string{
+		"blockquote markers":     strings.Repeat(">", 65) + " a\n" + strings.Repeat(">", 65) + " b\n",
+		"bullet markers":         strings.Repeat("- ", 65) + "x\n",
+		"star markers":           strings.Repeat("* ", 65) + "x\n",
+		"ordered markers":        strings.Repeat("1. ", 65) + "x\n",
+		"markers across lines":   nestedList(65),
+		"markers and quotations": strings.Repeat("> ", 33) + strings.Repeat("- ", 33) + "x\n",
+		// A tab is four columns of indentation, which is what CommonMark counts
+		// it as — so a tab-indented list reaches the bound in a quarter of the
+		// lines, and a counter that read a tab as one column would miss it.
+		"markers behind tabs": strings.Repeat("\t", 32) + "- item\n",
+	} {
+		diags, err := hardwrap.Diagnostics("deep.md", hardwrap.Source(document), hardwrap.DefaultSettings())
+
+		assert.Empty(t, diags, "%s: a tool failure yields no findings", name)
+		assert.ErrorIs(t, err, hardwrap.ErrTooDeep, "%s open containers this rule will not parse", name)
+	}
+}
+
+// nestedList is a list nested to depth levels, one item per line, the way a
+// deeply nested list is really written.
+func nestedList(depth int) string {
+	document := strings.Builder{}
+	for level := range depth {
+		// The builder never fails; its error exists for io.Writer's sake.
+		_, _ = document.WriteString(strings.Repeat("  ", level) + "- item\n")
+	}
+	return document.String()
+}
+
+// TestNothingAnybodyWritesReachesTheNestingBound is the other direction, and the
+// one that decides whether the bound is usable. The deepest line in any markdown
+// file on disk scores seventeen and the deepest first-party line scores eight, so
+// every one of these is judged rather than refused — including the shapes that
+// LOOK deep to a counter: an indented code block, and a deeply indented sample
+// inside a fence, neither of which opens a container at all.
+func TestNothingAnybodyWritesReachesTheNestingBound(t *testing.T) {
+	t.Parallel()
+
+	const wrapped = "\na paragraph that is\nwrapped\n"
+
+	for name, document := range map[string]string{
+		"a list nested eight deep":     nestedList(8) + wrapped,
+		"a quotation nested three":     "> > > quoted on one line\n" + wrapped,
+		"an indented code block":       "text\n\n" + strings.Repeat(" ", 44) + "deep code\n" + wrapped,
+		"a deeply indented fence":      "```yaml\n" + strings.Repeat(" ", 40) + "- name: x\n```\n" + wrapped,
+		"a list inside a quotation":    "> - a\n>   - b\n>     - c\n" + wrapped,
+		"a paragraph starting with a-": "- a dash mid sentence - like this\n" + wrapped,
+		"a tab-indented list":          "- a\n\t- b\n" + wrapped,
+	} {
+		diags, err := hardwrap.Diagnostics("notes.md", hardwrap.Source(document), hardwrap.DefaultSettings())
+
+		require.NoError(t, err, "%s is a document somebody wrote", name)
+		assert.Len(t, diags, 1, "%s is judged, and its wrapped paragraph found", name)
+	}
+}
+
+// TestAMarkerAtTheEndOfALineIsStillOneMarker pins the degenerate lines the
+// depth counter has to survive. A list marker with nothing after it is an empty
+// list item — a real document, however odd — and reading a marker and a space
+// off a line holding only the marker panicked. The fuzz target found it, which
+// is the only place a one-character document was going to come from.
+func TestAMarkerAtTheEndOfALineIsStillOneMarker(t *testing.T) {
+	t.Parallel()
+
+	for _, document := range []string{"*", "-", "+", "1.", "1)", "0", ">", "- ", "-\n- a\n", "1.\n", "> -"} {
+		diags, err := hardwrap.Diagnostics("notes.md", hardwrap.Source(document), hardwrap.DefaultSettings())
+
+		require.NoError(t, err, "%q is a document, however degenerate", document)
+		assert.Empty(t, diags, "%q occupies one line per block", document)
+	}
+}

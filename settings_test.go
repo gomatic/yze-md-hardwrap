@@ -122,7 +122,8 @@ func TestConfiguredSettingsRefusesWhateverItsPartsRefuse(t *testing.T) {
 
 		require.ErrorIs(t, err, testCase.wantErr, name)
 		if testCase.wantErr != nil {
-			assert.Equal(t, hardwrap.Settings{}, settings, "%s yields nothing a run could be made from", name)
+			assert.Equal(t, hardwrap.Settings{}, settings,
+				"%s yields the zero value, which is the strict default run rather than a run that reads nothing", name)
 		}
 	}
 }
@@ -145,4 +146,17 @@ func TestAConfiguredRunReadsTheVariablesItDocuments(t *testing.T) {
 		"two variables, spelled exactly this way")
 	assert.True(t, settings.Documents.Reads("notes.txt"))
 	assert.Equal(t, hardwrap.AuthoredBreaks, settings.Breaks)
+}
+
+// TestTheZeroSettingsValueStillJudgesADocument pins the whole of that zero
+// value, not merely its break setting: a caller that builds a [hardwrap.Settings]
+// and fills in nothing gets the DEFAULT run — markdown, judged by the standard —
+// rather than a run that silently reads no file at all.
+func TestTheZeroSettingsValueStillJudgesADocument(t *testing.T) {
+	t.Parallel()
+
+	diags, err := hardwrap.Diagnostics("notes.md", "a paragraph that is\nwrapped\n", hardwrap.Settings{})
+
+	require.NoError(t, err)
+	assert.Len(t, diags, 1, "the zero value reads markdown and applies the standard")
 }

@@ -32,19 +32,24 @@ import (
 //
 // The extensions are not decoration; each one is a block shape that would
 // otherwise be misread as wrapped prose. GFM gives tables (whose rows are one
-// line each, but whose cells are otherwise ordinary paragraph text), Footnote
-// gives `[^1]: …` definitions, and DefinitionList gives `Term` / `: value`
-// pairs. Without them, consecutive definitions and a term with its definition
-// are ONE paragraph spanning several lines — a finding on a document that is
-// correct. This set is also what Hugo enables by default, so a content page is
-// read the way the site that publishes it reads it.
+// line each, but whose cells are otherwise ordinary paragraph text) and Footnote
+// gives `[^1]: …` definitions. Without them, consecutive definitions are ONE
+// paragraph spanning several lines — a finding on a document that is correct.
+//
+// DEFINITION LISTS ARE DELIBERATELY ABSENT, and that is a reversal. The
+// extension was here so a `Term` / `: value` pair would not read as a wrapped
+// paragraph — but under it, EVERY line above a `:` is a term of its own, so
+// appending one `: note` line turned twenty lines of hard-wrapped prose into
+// twenty one-line terms and reported nothing. A second adversarial review found
+// it. Measured before it was removed (2026-08-12): the whole fleet holds ZERO
+// definition lists, in any repository, so the exemption protected nothing and
+// cost a bypass anyone could type. GitHub renders the same text as one paragraph
+// in the first place, which is how it is now read here.
 var markdown = newParser()
 
 // newParser assembles the markdown parser.
 func newParser() parser.Parser {
-	return goldmark.New(
-		goldmark.WithExtensions(extension.GFM, extension.Footnote, extension.DefinitionList),
-	).Parser()
+	return goldmark.New(goldmark.WithExtensions(extension.GFM, extension.Footnote)).Parser()
 }
 
 // blockKind is what a hard-wrapped block is called in its finding.
@@ -54,16 +59,11 @@ type blockKind string
 // its own kind, or — for the anonymous text block a tight list item and a
 // definition description hold their prose in — by the kind of its parent, which
 // is the construct an author would recognise.
-//
-// A definition TERM is deliberately absent: each line above a `:` is a term of
-// its own, so two lines are two terms rather than one term wrapped, and an entry
-// for it would name a finding nothing produces.
 var blockNames = map[ast.NodeKind]blockKind{
-	ast.KindParagraph:                "paragraph",
-	ast.KindHeading:                  "heading",
-	ast.KindListItem:                 "list item",
-	extast.KindTableCell:             "table cell",
-	extast.KindDefinitionDescription: "definition",
+	ast.KindParagraph:    "paragraph",
+	ast.KindHeading:      "heading",
+	ast.KindListItem:     "list item",
+	extast.KindTableCell: "table cell",
 }
 
 // blockName is what this block is called in a finding.
@@ -90,19 +90,32 @@ type scanned struct {
 	breaks Breaks
 }
 
-// wrapped is every hard-wrapped block of one document, in source order.
-func wrapped(at Path, text Source, breaks Breaks) []goyze.Diagnostic {
+// wrapped is one document's hard-wrapped blocks, in source order, and how many
+// there WERE — which is not the length of the slice.
+//
+// Past the per-document limit it keeps counting and stops collecting. Building
+// the whole slice and trimming it afterwards bounded the report but not the
+// memory the report was supposed to bound: an eight-megabyte document of
+// two-line paragraphs allocated 195,122 diagnostics — 285 MB beyond the same
+// document with nothing to report — to emit a thousand of them. Found by a
+// second adversarial review, against a comment claiming the opposite.
+func wrapped(at Path, text Source, breaks Breaks) ([]goyze.Diagnostic, findingCount) {
 	body, offset := withoutFrontMatter(text)
 	doc := scanned{source: []byte(body), lines: newLineIndex(body), offset: offset, breaks: breaks}
 	document := markdown.Parse(mdtext.NewReader(doc.source))
 	if isGenerated(document, doc.source, doc.lines) {
-		return nil
+		return nil, 0
 	}
 	var found []goyze.Diagnostic
+	total := findingCount(0)
 	for _, block := range blocks(document, nil) {
-		found = append(found, blockFinding(at, block, doc)...)
+		one := blockFinding(at, block, doc)
+		total += findingCount(len(one))
+		if findingCount(len(found)) < findingLimit {
+			found = append(found, one...)
+		}
 	}
-	return found
+	return found, total
 }
 
 // blockFinding is the ONE finding a block earns, or none.
@@ -114,7 +127,7 @@ func wrapped(at Path, text Source, breaks Breaks) []goyze.Diagnostic {
 // carries how many source lines the wrapped region spans, which is what the
 // author is being asked to make one.
 func blockFinding(at Path, node ast.Node, doc scanned) []goyze.Diagnostic {
-	breaks := doc.reported(node, lineBreaks(node, nil))
+	breaks := doc.reported(node, doc.lineBreaks(node))
 	if len(breaks) == 0 {
 		return nil
 	}
@@ -144,7 +157,8 @@ const spannedBeyondTheLastBreak lineCount = 2
 //
 // The descent skips inline nodes because they hold no blocks; that is a saving,
 // not a correctness guard — what keeps one wrap from being reported twice is
-// [lineBreaks] refusing to cross into a nested block.
+// [proseBlocks], which reads the lines of a leaf block and never those of the
+// container around it.
 func blocks(root ast.Node, into []ast.Node) []ast.Node {
 	for child := root.FirstChild(); child != nil; child = child.NextSibling() {
 		if !blockNodes[child.Type()] {
@@ -166,56 +180,80 @@ var blockNodes = map[ast.NodeType]bool{
 	ast.TypeDocument: false,
 }
 
-// lineBreak is one newline inside a block's own text, and how the FORMAT spells
-// it. Both spellings are collected and the choice between them is made later,
-// because which of them a run reports is configuration — and a break dropped
-// here would be a decision the configuration could no longer reach.
+// lineBreak is one line ending inside a block's own text: the position of the
+// newline itself, which is where the line it ends can be read from.
 type lineBreak struct {
-	at     byteOffset
-	isHard hardBreak
+	at byteOffset
 }
 
-// hardBreak is the parser's answer about one line ending: a spelling the format
-// renders as a visible break, rather than a newline it discards.
-type hardBreak bool
-
-// lineBreaks is every newline inside a block's own text, appended to what it
-// was given.
+// lineBreaks is every line ending inside ONE block's own text.
 //
-// Only the INLINE subtree is read, and that IS a correctness guard: a container
-// block's prose belongs to the leaf blocks inside it, each of which is visited
-// in its own right, so crossing into one would attribute a paragraph's break to
-// the blockquote around it as well and report one wrap twice.
-func lineBreaks(node ast.Node, into []lineBreak) []lineBreak {
-	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
-		if blockNodes[child.Type()] {
-			continue
-		}
-		into = lineBreaks(child, append(into, breakOf(child)...))
-	}
-	return into
-}
-
-// breakOf is where this inline node's trailing newline is, when it ends a line
-// at all — at most one position, expressed as a slice so a caller composes it
-// without a branch.
+// It is taken from the block's own LINE SEGMENTS rather than from the breaks
+// the parser reports between inline nodes, and that is the difference between a
+// rule and a rule with a hole in it. A parser reports a break between two pieces
+// of TEXT; a newline inside a raw HTML comment, a link title or a code span
+// falls inside ONE inline node, so it is no break at all to the parser — and
+// `prose <!--` / `--> more prose` is then a hard-wrapped paragraph that renders
+// as one line and reports nothing. Found by an adversarial review, which called
+// it worse than the spellings this rule stopped exempting: this one is invisible
+// in the rendered output as well as in the report.
 //
-// The hard spelling is asked FIRST, so that a line ending the format renders
-// keeps that spelling even if a parser were to mark both: a run configured to
-// leave authored breaks alone would otherwise leave alone whichever of the two
-// happened to be asked about first.
-func breakOf(node ast.Node) []lineBreak {
-	text, isText := node.(*ast.Text)
-	if !isText {
+// A block's segments are one per source line, so the boundaries between them
+// are the lines the block occupies, whatever the source put on them.
+func (d scanned) lineBreaks(node ast.Node) []lineBreak {
+	if !proseBlocks[node.Kind()] {
 		return nil
 	}
-	if text.HardLineBreak() {
-		return []lineBreak{{at: byteOffset(text.Segment.Start), isHard: true}}
+	segments := node.Lines()
+	breaks := make([]lineBreak, 0, max(segments.Len()-1, 0))
+	for at := range segments.Len() - 1 {
+		// One before the next line's start is the newline itself, which belongs
+		// to the line it ends — the line an author joins.
+		breaks = append(breaks, lineBreak{at: byteOffset(segments.At(at).Stop) - 1})
 	}
-	if text.SoftLineBreak() {
-		return []lineBreak{{at: byteOffset(text.Segment.Start)}}
-	}
-	return nil
+	return breaks
+}
+
+// proseBlocks says which blocks hold PROSE — text this rule requires to occupy
+// one line. Every block kind the parser and its extensions can produce is named
+// rather than compared against one: a kind absent from the table is a decision
+// nobody wrote down, and this table decides what the rule applies to at all.
+//
+// The excluded kinds fall in three groups. A CONTAINER (a list, a blockquote, a
+// table, a definition list) holds no text of its own — its lines belong to the
+// leaf blocks inside it, each visited in its own right, and reading a
+// container's lines would report one wrap twice. A VERBATIM block (fenced code,
+// indented code, raw HTML) means its lines literally, so joining them changes
+// what it says. A block with no text at all (a thematic break) has nothing to
+// occupy a line with.
+//
+// An HTML BLOCK is the one exclusion worth naming twice, because it is the one
+// that holds real prose. Its lines are markup a renderer passes through
+// verbatim, and the standard governs a paragraph, a list item, a blockquote, a
+// table row and a heading — an HTML block is none of those. Measured before it
+// was left out (2026-08-12): 1,775 multi-line HTML blocks fleet-wide, the
+// first-party ones being Hugo layout blocks on `www.*` content pages, where a
+// tag per line is the whole convention. Reporting them would tell an author to
+// collapse markup, which is a rule nobody has written. Prose hard-wrapped inside
+// one therefore goes unjudged; see the package doc.
+var proseBlocks = map[ast.NodeKind]bool{
+	ast.KindParagraph:       true,
+	ast.KindTextBlock:       true,
+	ast.KindHeading:         true,
+	extast.KindTableCell:    true,
+	ast.KindDocument:        false,
+	ast.KindBlockquote:      false,
+	ast.KindList:            false,
+	ast.KindListItem:        false,
+	ast.KindThematicBreak:   false,
+	ast.KindCodeBlock:       false,
+	ast.KindFencedCodeBlock: false,
+	ast.KindHTMLBlock:       false,
+	extast.KindTable:        false,
+	extast.KindTableHeader:  false,
+	extast.KindTableRow:     false,
+	extast.KindFootnote:     false,
+	extast.KindFootnoteList: false,
 }
 
 // byteOffset is a position in a document's bytes.

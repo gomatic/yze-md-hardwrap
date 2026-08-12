@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	hardwrap "github.com/gomatic/yze-md-hardwrap"
 )
@@ -34,8 +35,9 @@ func TestMarkdownIsReadWithNoConfigurationAtAll(t *testing.T) {
 func TestAConfiguredRunReadsMoreWithoutReadingLess(t *testing.T) {
 	t.Parallel()
 
-	docs := hardwrap.ConfiguredDocuments(func(string) string { return ".txt" })
+	docs, err := hardwrap.ConfiguredDocuments(environment(map[string]string{documentsVariable: ".txt"}))
 
+	require.NoError(t, err)
 	assert.True(t, docs.Reads("notes.txt"), "the configured extension is read")
 	assert.True(t, docs.Reads("README.md"), "and markdown is still read")
 }
@@ -47,8 +49,9 @@ func TestAConfiguredRunReadsMoreWithoutReadingLess(t *testing.T) {
 func TestAnEntryIsAnExtensionOrAWholeName(t *testing.T) {
 	t.Parallel()
 
-	docs := hardwrap.ConfiguredDocuments(func(string) string { return ".txt, NOTES" })
+	docs, err := hardwrap.ConfiguredDocuments(environment(map[string]string{documentsVariable: ".txt, NOTES"}))
 
+	require.NoError(t, err)
 	assert.True(t, docs.Reads("a/notes.txt"), "an extension matches any file carrying it")
 	assert.True(t, docs.Reads("a/NOTES"), "a name matches that file")
 	assert.True(t, docs.Reads("a/notes"), "however it is cased")
@@ -68,7 +71,8 @@ func TestTheConfiguredListIsSplitTheWayItIsWritten(t *testing.T) {
 		"a block scalar":         "\n.txt\n.rst\n",
 		"both, untidily":         " .txt ,, \n .rst \n",
 	} {
-		docs := hardwrap.ConfiguredDocuments(func(string) string { return configured })
+		docs, err := hardwrap.ConfiguredDocuments(environment(map[string]string{documentsVariable: configured}))
+		require.NoError(t, err, name)
 		assert.True(t, docs.Reads("a.txt"), "%s names .txt", name)
 		assert.True(t, docs.Reads("a.rst"), "%s names .rst", name)
 	}
@@ -79,8 +83,9 @@ func TestTheConfiguredListIsSplitTheWayItIsWritten(t *testing.T) {
 func TestAnUnsetConfigurationIsTheDefaultSet(t *testing.T) {
 	t.Parallel()
 
-	docs := hardwrap.ConfiguredDocuments(func(string) string { return "" })
+	docs, err := hardwrap.ConfiguredDocuments(environment(nil))
 
+	require.NoError(t, err)
 	assert.Equal(t, hardwrap.DefaultDocuments(), docs)
 }
 
@@ -90,10 +95,29 @@ func TestAnUnsetConfigurationIsTheDefaultSet(t *testing.T) {
 func TestALicenceIsNeverRead(t *testing.T) {
 	t.Parallel()
 
-	docs := hardwrap.ConfiguredDocuments(func(string) string { return "LICENSE, LICENCE, .txt" })
+	docs, err := hardwrap.ConfiguredDocuments(
+		environment(map[string]string{documentsVariable: "LICENSE, LICENCE, .txt"}),
+	)
+	require.NoError(t, err)
 
 	for _, licence := range []string{"LICENSE", "licence", "LICENSE.md", "sub/LICENCE.txt", "License.markdown"} {
 		assert.False(t, docs.Reads(hardwrap.Path(licence)), "%s is not ours to reflow", licence)
 	}
 	assert.True(t, docs.Reads("licensing.md"), "a document ABOUT licensing is ordinary prose")
+}
+
+// TestAnEntryNamingAPathIsRefused pins the one shape of entry that cannot work.
+// A selector is matched against a file's whole name or its extension, so an
+// entry carrying a separator claims nothing — and a configuration that claims
+// nothing while reporting success is how a repository comes to believe it is
+// being read.
+func TestAnEntryNamingAPathIsRefused(t *testing.T) {
+	t.Parallel()
+
+	for _, configured := range []string{"docs/notes.txt", "./notes.txt", "a/b/c", ".txt, docs/notes.txt"} {
+		docs, err := hardwrap.ConfiguredDocuments(environment(map[string]string{documentsVariable: configured}))
+
+		require.ErrorIs(t, err, hardwrap.ErrDocumentPath, "%q names a path", configured)
+		assert.Nil(t, docs, "a refused configuration yields no document set to run with")
+	}
 }

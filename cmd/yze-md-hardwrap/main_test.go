@@ -61,7 +61,7 @@ func TestRunEmitsReportForDirectory(t *testing.T) {
 
 	require.Equal(t, 0, run([]string{dir}))
 	assert.Contains(t, buf.String(), "yze/hardwrap")
-	assert.Contains(t, buf.String(), "hard-wrapped")
+	assert.Contains(t, buf.String(), "spans 2 source lines")
 }
 
 // TestRunAcceptsExplicitFile pins that a named file is analyzed verbatim,
@@ -122,7 +122,7 @@ func TestAnUnreadableTreeIsReportedRatherThanLost(t *testing.T) {
 	require.Equal(t, 0, run([]string{dir}))
 	out := buf.String()
 	assert.Contains(t, out, "locked", "the tree is reported rather than passed over")
-	assert.Contains(t, out, "hard-wrapped", "and every other document keeps its findings")
+	assert.Contains(t, out, "source lines", "and every other document keeps its findings")
 }
 
 // deniedTree walks for real but reports one path as unreadable.
@@ -150,7 +150,10 @@ func TestANamedNonRegularFileIsRefusedRatherThanRead(t *testing.T) {
 	pipe := filepath.Join(dir, "notes.md")
 	require.NoError(t, syscall.Mkfifo(pipe, 0o600))
 
-	_, err := discovery(configuredDocuments()).Expand([]string{pipe})
+	settings, err := configuredSettings()
+	require.NoError(t, err)
+
+	_, err = discovery(settings.Documents).Expand([]string{pipe})
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, goyze.ErrNotRegularFile)

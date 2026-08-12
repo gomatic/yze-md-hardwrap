@@ -1,22 +1,52 @@
-// Package hardwrap reports prose whose SOURCE spans more lines than it renders.
+// Package hardwrap reports a paragraph, list item, blockquote, table row or
+// heading whose SOURCE spans more than one line.
 //
-// A newline inside a paragraph, a list item, a blockquote or a heading that is
-// not an explicit hard break — a trailing backslash, or two trailing spaces —
-// is invisible in the rendered output. Every CommonMark renderer joins those
-// lines. Such a newline therefore cannot carry authorial meaning; it exists
-// only to fit a column, and it costs a diff line per reflow, an inconsistent
-// line length per paragraph, and a merge conflict per neighbouring edit.
+// The standard it mechanizes is one sentence: write each of those as ONE
+// physical line, however long. A renderer decides where a rendered line ends;
+// a newline inside a block is therefore a decision about the SOURCE, and it
+// costs a diff line per reflow, an inconsistent line length per paragraph, and
+// a merge conflict per neighbouring edit.
 //
 // That is what makes this rule EXACT rather than heuristic. It is not "lines
-// look short here" — it is "the renderer discards this newline", which the
-// parser answers with certainty. The escape hatch already exists in the format
-// itself: an author who wants a visible break writes one, and a line ending in
-// a backslash or two spaces is never reported.
+// look short here" — it is "this block occupies more than one line", which a
+// parse answers with certainty. The parse is the whole design: every construct
+// that LOOKS like a run of wrapped prose and is not one — a table's rows,
+// consecutive list items, a fenced example, front matter — is simply a
+// different node.
 //
-// The whole rule is therefore one sentence of code: every soft line break the
-// markdown parser reports is a hard-wrapped line. Everything else in this
-// package exists to decide which files are prose, which regions of them are
-// prose, and how much of a run's findings one report may carry.
+// # Strict by default
+//
+// A run reports EVERY line ending inside a block, whatever the source did to
+// spell it. The format's own spellings for a break meant to be seen are not
+// exempt, because an exemption available per line is not an exemption — it is
+// the rule's off switch, reachable one line at a time by anyone who learns it,
+// and a rule with an off switch measures how well a writer knows the switch.
+//
+// A document whose breaks really are authored — a poem, an address, a
+// transcript — is served by [AuthoredBreaks], which is a deliberate, reviewable
+// line in that repository's own configuration rather than a per-block escape.
+// See [Settings].
+//
+// The one construct exempt in every run is a GitHub alert marker (`> [!NOTE]`
+// and its four siblings), which is not a spelling of a line ending at all: the
+// marker must stand alone on its blockquote's first line for the alert to
+// exist, so joining it deletes the construct rather than reflowing it.
+//
+// # What this rule does not see
+//
+// Three limits are known, measured and accepted rather than guessed at:
+//
+//   - A newline inside a multi-line code SPAN is not reported. The parser hands
+//     back one inline node for the whole span, so the break inside it is not a
+//     break between two pieces of the block's text.
+//   - A CR-only line ending (a pre-OSX Macintosh document) is not a line ending
+//     to a CommonMark parser, so such a document is one long line and reports
+//     nothing. Fleet count: zero.
+//   - A Hugo shortcode (`{{< tabs >}}`) is ordinary paragraph text to a
+//     CommonMark parser, so a shortcode broken across lines is reported as a
+//     wrapped paragraph. Measured fleet-wide before it was left alone: zero
+//     shortcode use, so mechanizing it would have cost every run something to
+//     detect nothing.
 package hardwrap
 
 import (
@@ -101,10 +131,18 @@ const findingLimit findingCount = 1000
 
 // wrapMessage formats a hard-wrapped block. It names the construct because the
 // fix differs in shape between them — a paragraph is joined, a list item is
-// joined within its marker — even though the defect is the same newline.
-const wrapMessage = "this %s is hard-wrapped: markdown joins these lines, so the newline is invisible in the " +
-	"rendered output and exists only to fit a column; write it as one line, or end this line with a " +
-	"backslash where the break is meant to be seen"
+// joined within its marker — and it names how many source lines the block
+// spans, because that is the size of the edit being asked for.
+//
+// It states the RULE and nothing else. A diagnostic is read at the exact moment
+// its reader is looking for the cheapest way to make the gate green, so a
+// message that named a spelling the rule leaves alone would be a bypass
+// tutorial delivered by the tool itself, to the one audience most likely to
+// apply it mechanically to every line it touches. The same discipline binds
+// every string this command prints.
+const wrapMessage = "this %s spans %d source lines: a paragraph, list item, blockquote, table row or heading is " +
+	"written as ONE physical line, however long, because the renderer decides where a rendered line ends and " +
+	"a newline here only costs a diff line per reflow and a conflict per neighbouring edit; join them"
 
 // truncationMessage formats the finding that stands for the ones not reported.
 const truncationMessage = "%d hard-wrapped blocks in this document, of which %d are reported; a document with " +
@@ -112,15 +150,16 @@ const truncationMessage = "%d hard-wrapped blocks in this document, of which %d 
 
 // Diagnostics reports the hard-wrapped blocks of one document.
 //
-// docs decides whether this path is prose at all: markdown by extension, and
-// anything else only where the run was configured to read it. A path the run
-// does not read yields no findings and no error — it is not this rule's
-// business, which is a different answer from "it is clean".
+// settings decides whether this path is prose at all — markdown by extension, and
+// anything else only where the run was configured to read it — and how a line
+// ending is judged. A path the run does not read yields no findings and no
+// error: it is not this rule's business, which is a different answer from "it
+// is clean".
 //
 // A document that is not text yields [ErrNotText], so the caller surfaces a
 // tool failure rather than a clean pass over a file nobody read.
-func Diagnostics(at Path, source Source, docs Documents) ([]goyze.Diagnostic, error) {
-	diags, _, err := countedDiagnostics(at, source, docs)
+func Diagnostics(at Path, source Source, settings Settings) ([]goyze.Diagnostic, error) {
+	diags, _, err := countedDiagnostics(at, source, settings)
 	return diags, err
 }
 
@@ -128,15 +167,15 @@ func Diagnostics(at Path, source Source, docs Documents) ([]goyze.Diagnostic, er
 // document holds, which is not the number reported: the per-document limit
 // truncates the slice, so a run summing the slices would count its own
 // truncation rather than the documents.
-func countedDiagnostics(at Path, source Source, docs Documents) ([]goyze.Diagnostic, findingCount, error) {
+func countedDiagnostics(at Path, source Source, settings Settings) ([]goyze.Diagnostic, findingCount, error) {
 	text, err := readable(at, source)
 	if err != nil {
 		return nil, 0, err
 	}
-	if !docs.Reads(at) {
+	if !settings.Documents.Reads(at) {
 		return nil, 0, nil
 	}
-	found := wrapped(at, text)
+	found := wrapped(at, text, settings.Breaks)
 	total := findingCount(len(found))
 	if total > findingLimit {
 		return append(found[:findingLimit], truncation(at, total)), total, nil

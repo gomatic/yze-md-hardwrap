@@ -58,7 +58,7 @@ func TestReportAggregatesEveryDocumentsFindings(t *testing.T) {
 		"c.md": wrappedDocument,
 	})
 
-	report := hardwrap.Report(read, []string{"a.md", "b.md", "c.md"}, nil, hardwrap.DefaultDocuments())
+	report := hardwrap.Report(read, []string{"a.md", "b.md", "c.md"}, nil, hardwrap.DefaultSettings())
 
 	require.Len(t, report.Diagnostics, 2)
 	assert.Equal(t, "a.md", report.Diagnostics[0].Path)
@@ -74,9 +74,27 @@ func TestReportReadsWhatTheRunWasConfiguredToRead(t *testing.T) {
 	read := reader(map[string]string{"notes.txt": wrappedDocument})
 	files := []string{"notes.txt"}
 
-	assert.Empty(t, hardwrap.Report(read, files, nil, hardwrap.DefaultDocuments()).Diagnostics)
-	configured := hardwrap.ConfiguredDocuments(func(string) string { return ".txt" })
+	assert.Empty(t, hardwrap.Report(read, files, nil, hardwrap.DefaultSettings()).Diagnostics)
+	configured, err := hardwrap.ConfiguredSettings(environment(map[string]string{documentsVariable: ".txt"}))
+	require.NoError(t, err)
 	assert.Len(t, hardwrap.Report(read, files, nil, configured).Diagnostics, 1)
+}
+
+// TestReportJudgesLineEndingsTheWayTheRunWasConfigured pins that the OTHER
+// setting reaches the aggregation too, and pins which way round the two runs
+// are: the configured run reports less than the default one, never more.
+func TestReportJudgesLineEndingsTheWayTheRunWasConfigured(t *testing.T) {
+	t.Parallel()
+
+	read := reader(map[string]string{"notes.md": "a paragraph that ends a line the format renders  \nand carries on\n"})
+	files := []string{"notes.md"}
+
+	assert.Len(t, hardwrap.Report(read, files, nil, hardwrap.DefaultSettings()).Diagnostics, 1,
+		"the default run judges every line ending")
+	configured, err := hardwrap.ConfiguredSettings(environment(map[string]string{breaksVariable: "authored"}))
+	require.NoError(t, err)
+	assert.Empty(t, hardwrap.Report(read, files, nil, configured).Diagnostics,
+		"and the configured run leaves the ones the format renders")
 }
 
 // TestReportContainsAReadFailureToItsOwnFile pins that a document the gate
@@ -87,7 +105,7 @@ func TestReportContainsAReadFailureToItsOwnFile(t *testing.T) {
 
 	read := reader(map[string]string{"notes.md": wrappedDocument})
 
-	report := hardwrap.Report(read, []string{"locked.md", "notes.md"}, nil, hardwrap.DefaultDocuments())
+	report := hardwrap.Report(read, []string{"locked.md", "notes.md"}, nil, hardwrap.DefaultSettings())
 
 	messages := map[string]string{}
 	for _, diag := range report.Diagnostics {
@@ -96,7 +114,7 @@ func TestReportContainsAReadFailureToItsOwnFile(t *testing.T) {
 	assert.Contains(t, messages["locked.md"], "cannot be analyzed as a document")
 	assert.Contains(t, messages["locked.md"], hardwrap.ErrReadFile.Error())
 	assert.Contains(t, messages["locked.md"], errUnreadable.Error(), "the cause the filesystem gave")
-	assert.Contains(t, messages["notes.md"], "hard-wrapped", "its neighbour keeps its finding")
+	assert.Contains(t, messages["notes.md"], wrapMarker, "its neighbour keeps its finding")
 }
 
 // TestReportContainsAnUnreadableDocumentToItsOwnFile pins the containment: a
@@ -110,7 +128,7 @@ func TestReportContainsAnUnreadableDocumentToItsOwnFile(t *testing.T) {
 		"notes.md": wrappedDocument,
 	})
 
-	report := hardwrap.Report(read, []string{"blob.md", "notes.md"}, nil, hardwrap.DefaultDocuments())
+	report := hardwrap.Report(read, []string{"blob.md", "notes.md"}, nil, hardwrap.DefaultSettings())
 
 	require.Len(t, report.Diagnostics, 2)
 	assert.Contains(t, report.Diagnostics[0].Message, "cannot be analyzed as a document")
@@ -122,7 +140,7 @@ func TestReportContainsAnUnreadableDocumentToItsOwnFile(t *testing.T) {
 func TestReportOfNoFilesIsAnEmptyReport(t *testing.T) {
 	t.Parallel()
 
-	assert.Empty(t, hardwrap.Report(reader(nil), nil, nil, hardwrap.DefaultDocuments()).Diagnostics)
+	assert.Empty(t, hardwrap.Report(reader(nil), nil, nil, hardwrap.DefaultSettings()).Diagnostics)
 }
 
 // TestUnreadablePathsAreReportedRatherThanSkipped pins that a path the walk
@@ -134,7 +152,7 @@ func TestUnreadablePathsAreReportedRatherThanSkipped(t *testing.T) {
 
 	read := reader(map[string]string{"notes.md": wrappedDocument})
 
-	report := hardwrap.Report(read, []string{"notes.md"}, []string{"locked", "gone"}, hardwrap.DefaultDocuments())
+	report := hardwrap.Report(read, []string{"notes.md"}, []string{"locked", "gone"}, hardwrap.DefaultSettings())
 
 	require.Len(t, report.Diagnostics, 3)
 	assert.Equal(t, "locked", report.Diagnostics[0].Path)
@@ -154,7 +172,7 @@ func TestUnreadablePathsPassThroughTheRunsOwnLimit(t *testing.T) {
 		locked = append(locked, "locked"+strconv.Itoa(i))
 	}
 
-	report := hardwrap.Report(reader(nil), nil, locked, hardwrap.DefaultDocuments())
+	report := hardwrap.Report(reader(nil), nil, locked, hardwrap.DefaultSettings())
 
 	require.Len(t, report.Diagnostics, 10_001, "the run limit, plus the notice that stands for the rest")
 	assert.Contains(t, report.Diagnostics[10_000].Message, "10100 hard-wrapped blocks across this run")
@@ -168,11 +186,11 @@ func TestARunExactlyAtItsLimitCarriesNoTruncationNotice(t *testing.T) {
 
 	contents, files := crowded(10, 1000)
 
-	report := hardwrap.Report(reader(contents), files, nil, hardwrap.DefaultDocuments())
+	report := hardwrap.Report(reader(contents), files, nil, hardwrap.DefaultSettings())
 
 	require.Len(t, report.Diagnostics, 10_000, "exactly the limit fits, and nothing stands for a remainder")
 	for _, diag := range report.Diagnostics {
-		assert.Contains(t, diag.Message, "is hard-wrapped", "no truncation notice among them")
+		assert.Contains(t, diag.Message, wrapMarker, "no truncation notice among them")
 	}
 }
 
@@ -185,7 +203,7 @@ func TestTheRunLimitBoundsTheReportAndNeverLosesTheCount(t *testing.T) {
 
 	contents, files := crowded(30, 500)
 
-	report := hardwrap.Report(reader(contents), files, nil, hardwrap.DefaultDocuments())
+	report := hardwrap.Report(reader(contents), files, nil, hardwrap.DefaultSettings())
 
 	require.Len(t, report.Diagnostics, 10_001, "the run limit, plus the notice that stands for the rest")
 	last := report.Diagnostics[10_000]
@@ -203,7 +221,7 @@ func TestARunPastItsLimitStillCountsWhatItStoppedCollecting(t *testing.T) {
 
 	contents, files := crowded(40, 500)
 
-	report := hardwrap.Report(reader(contents), files, nil, hardwrap.DefaultDocuments())
+	report := hardwrap.Report(reader(contents), files, nil, hardwrap.DefaultSettings())
 
 	assert.Contains(t, report.Diagnostics[10_000].Message, "20000 hard-wrapped blocks across this run",
 		"ten more files were counted after collection stopped")
@@ -216,7 +234,7 @@ func TestEveryDiagnosticCarriesTheRuleIdentity(t *testing.T) {
 	t.Parallel()
 
 	report := hardwrap.Report(reader(map[string]string{"a.md": wrappedDocument}), []string{"a.md", "gone.md"},
-		[]string{"locked"}, hardwrap.DefaultDocuments())
+		[]string{"locked"}, hardwrap.DefaultSettings())
 
 	encoded, err := goyze.MarshalReport(report)
 	require.NoError(t, err)

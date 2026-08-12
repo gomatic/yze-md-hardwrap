@@ -50,8 +50,11 @@ func report(args []string) error {
 		// over a repository no analyzer ever looked at.
 		return hardwrap.ErrNoPaths.With(nil)
 	}
-	docs := configuredDocuments()
-	found, err := discovery(docs).Expand(args)
+	run, err := configuredSettings()
+	if err != nil {
+		return err
+	}
+	found, err := discovery(run.Documents).Expand(args)
 	if err != nil {
 		return err
 	}
@@ -59,7 +62,7 @@ func report(args []string) error {
 	// finding against that file rather than the run's error. What the walk could
 	// not read goes THROUGH it rather than beside it, so one limit governs
 	// everything the run emits.
-	return json.NewEncoder(stdout).Encode(hardwrap.Report(readFile, found.Files, found.Unreadable, docs))
+	return json.NewEncoder(stdout).Encode(hardwrap.Report(readFile, found.Files, found.Unreadable, run))
 }
 
 // fail prints err to stderr and returns the failure exit code.

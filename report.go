@@ -46,7 +46,7 @@ type FileReader func(path string) ([]byte, error)
 // THROUGH this function rather than beside it: prepending those findings after
 // the fact put them outside the run's limit, so a tree of unreadable
 // directories was the one unbounded path left in a bounded report.
-func Report(read FileReader, files, unreadable []string, docs Documents) goyze.Report {
+func Report(read FileReader, files, unreadable []string, settings Settings) goyze.Report {
 	// Started EMPTY rather than nil, so a clean run encodes as
 	// `{"diagnostics":[]}` — the same shape as a run with findings, rather than
 	// a null a consumer has to special-case.
@@ -55,7 +55,7 @@ func Report(read FileReader, files, unreadable []string, docs Documents) goyze.R
 		run = run.add(Path(path), []goyze.Diagnostic{unreadableFinding(Path(path), nil)}, 1)
 	}
 	for _, file := range files {
-		found, held := fileFindings(read, Path(file), docs)
+		found, held := fileFindings(read, Path(file), settings)
 		run = run.add(Path(file), found, held)
 	}
 	return run.done()
@@ -105,19 +105,19 @@ func (c collecting) done() goyze.Report {
 // A file the gate fails to open becomes ONE finding against that file and the
 // run continues, as an unparseable one does, so a single blob mis-claimed by
 // discovery leaves every other file's findings intact.
-func fileFindings(read FileReader, file Path, docs Documents) ([]goyze.Diagnostic, findingCount) {
+func fileFindings(read FileReader, file Path, settings Settings) ([]goyze.Diagnostic, findingCount) {
 	data, err := read(string(file))
 	if err != nil {
 		return []goyze.Diagnostic{unreadableFinding(file, err)}, 1
 	}
-	return documentDiagnostics(file, Source(data), docs)
+	return documentDiagnostics(file, Source(data), settings)
 }
 
 // documentDiagnostics is one document's findings, with a document too large,
 // too deeply nested or not text reported as a finding of its own rather than
 // raised as the whole run's error.
-func documentDiagnostics(file Path, source Source, docs Documents) ([]goyze.Diagnostic, findingCount) {
-	diags, held, err := countedDiagnostics(file, source, docs)
+func documentDiagnostics(file Path, source Source, settings Settings) ([]goyze.Diagnostic, findingCount) {
+	diags, held, err := countedDiagnostics(file, source, settings)
 	if err != nil {
 		return []goyze.Diagnostic{diagnostic(file, 1, finding(fmt.Sprintf(unreadableMessage, err)))}, 1
 	}

@@ -6,6 +6,7 @@ package hardwrap_test
 // fenced example is one no document can be written under.
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -16,13 +17,41 @@ import (
 	hardwrap "github.com/gomatic/yze-md-hardwrap"
 )
 
-// analyze runs the rule over one document, failing the test on a tool error.
+// analyze runs the rule over one document as an unconfigured run does — the
+// strict default — failing the test on a tool error.
 func analyze(t *testing.T, at, source string) []goyze.Diagnostic {
 	t.Helper()
-	diags, err := hardwrap.Diagnostics(hardwrap.Path(at), hardwrap.Source(source), hardwrap.DefaultDocuments())
+	return analyzeWith(t, hardwrap.DefaultSettings(), at, source)
+}
+
+// analyzeAuthored runs the rule over one document as the ONE configuration that
+// makes it lenient does: the format's own spellings for a break meant to be seen
+// are left alone. The document is markdown by name, because which FILES a run
+// reads is the other setting's question and is proven where that one is.
+func analyzeAuthored(t *testing.T, source string) []goyze.Diagnostic {
+	t.Helper()
+	return analyzeWith(t, hardwrap.Settings{
+		Documents: hardwrap.DefaultDocuments(),
+		Breaks:    hardwrap.AuthoredBreaks,
+	}, "notes.md", source)
+}
+
+// analyzeWith runs the rule over one document under a named run.
+func analyzeWith(t *testing.T, settings hardwrap.Settings, at, source string) []goyze.Diagnostic {
+	t.Helper()
+	diags, err := hardwrap.Diagnostics(hardwrap.Path(at), hardwrap.Source(source), settings)
 	require.NoError(t, err)
 	return diags
 }
+
+// wrapMarker is the part of a wrap finding's message that tells it from the
+// other findings this package can emit — a document it could not read, and a
+// notice standing for findings past a limit. It is a fragment of the message
+// rather than the whole of it so that rewording the rule's explanation does not
+// rewrite every test, and it is written out here rather than imported, because
+// an expectation taken from the implementation asserts only that the
+// implementation is itself.
+const wrapMarker = "source lines:"
 
 // linesOf is where a document's findings are, which is the half of a finding an
 // author navigates by.
@@ -60,109 +89,6 @@ func TestProseWrittenOneLinePerBlockIsSilent(t *testing.T) {
 	assert.Empty(t, analyze(t, "notes.md", document), "line length is not this rule's business")
 }
 
-// TestAnExplicitHardBreakIsNeverReported pins the escape hatch the format
-// already provides. A break the author asked to be SEEN is visible in the
-// output, so it is not a break that exists to fit a column — and a rule without
-// this exemption would have no way to write a visible line break at all.
-func TestAnExplicitHardBreakIsNeverReported(t *testing.T) {
-	t.Parallel()
-
-	for name, document := range map[string]string{
-		"a trailing backslash": "first line\\\nsecond line\n",
-		"two trailing spaces":  "first line  \nsecond line\n",
-	} {
-		assert.Empty(t, analyze(t, "notes.md", document), "%s is a visible break", name)
-	}
-}
-
-// TestOnlyTheInvisibleBreaksOfAMixedBlockAreReported pins that the two kinds of
-// break are judged separately within one paragraph: the visible one is left
-// alone and the invisible one below it is still found.
-func TestOnlyTheInvisibleBreaksOfAMixedBlockAreReported(t *testing.T) {
-	t.Parallel()
-
-	diags := analyze(t, "notes.md", "one\\\ntwo\nthree\n")
-
-	require.Len(t, diags, 1)
-	assert.Equal(t, []int{2}, linesOf(diags), "the backslash line is exempt, the bare newline below it is not")
-}
-
-// TestABackslashRunIsResolvedAsEscapesBeforeTheBreak pins the boundary a
-// scanner gets wrong and goldmark gets wrong differently. CommonMark resolves
-// the escapes first: an EVEN run is literal backslashes and the newline is
-// still invisible, while an ODD run leaves a lone backslash against the newline
-// and the break is one a reader sees.
-//
-// goldmark decides this from the last two characters, so it calls three
-// backslashes escaped text; trusting it would report the one shape whose whole
-// purpose is to make the break visible. The fuzz target found it on `0\\\`.
-func TestABackslashRunIsResolvedAsEscapesBeforeTheBreak(t *testing.T) {
-	t.Parallel()
-
-	for run, wraps := range map[string]bool{
-		`\`:      false,
-		`\\`:     true,
-		`\\\`:    false,
-		`\\\\`:   true,
-		`\\\\\`:  false,
-		`\\\\\\`: true,
-	} {
-		diags := analyze(t, "notes.md", "a line ending in "+run+"\nnext line\n")
-		assert.Equal(t, wraps, len(diags) == 1, "%q trailing backslashes: wraps=%v", run, wraps)
-		// The SAME question with a Windows line ending. The carriage return sits
-		// between the backslashes and the newline, so a line read without
-		// trimming it counts no backslashes at all and every one of these
-		// becomes a finding — including the three that are visible breaks.
-		crlf := analyze(t, "notes.md", "a line ending in "+run+"\r\nnext line\r\n")
-		assert.Equal(t, wraps, len(crlf) == 1, "%q trailing backslashes before a CRLF", run)
-	}
-}
-
-// TestAGitHubAlertMarkerIsStructuralRatherThanDecorative pins a break the parse
-// alone gets wrong. `> [!NOTE]` must stand ALONE on its blockquote's first line
-// for GitHub to render an alert at all — join it and the box, its icon and its
-// meaning are gone — so that newline is not one that exists to fit a column.
-// Found by rendering the fix through pandoc and comparing: joining it changed
-// the output, which is the definition of a break a reader sees.
-func TestAGitHubAlertMarkerIsStructuralRatherThanDecorative(t *testing.T) {
-	t.Parallel()
-
-	for _, marker := range []string{"[!NOTE]", "[!TIP]", "[!IMPORTANT]", "[!WARNING]", "[!CAUTION]", "[!note]"} {
-		assert.Empty(t, analyze(t, "notes.md", "> "+marker+"\n> the whole warning on one line\n"),
-			"%s opens an alert", marker)
-	}
-}
-
-// TestAnAlertsOWNProseIsStillJudged pins the other half: the marker's newline is
-// structural, and every newline BELOW it is as decorative as any other. The
-// finding lands on the body, which is the line an author joins.
-func TestAnAlertsOWNProseIsStillJudged(t *testing.T) {
-	t.Parallel()
-
-	diags := analyze(t, "notes.md", "> [!CAUTION]\n> a warning that is\n> wrapped\n")
-
-	require.Len(t, diags, 1)
-	assert.Equal(t, []int{2}, linesOf(diags))
-}
-
-// TestOnlyARealAlertMarkerIsStructural pins the narrowness. A bracketed word in
-// ordinary prose is a bracketed word, a type GitHub does not define opens
-// nothing, and only the FIRST line of a blockquote opens an alert — a second
-// marker below it is literal body text, and exempting that one silenced a
-// genuine wrap. Exempting any of them would be an opt-out anyone could type.
-func TestOnlyARealAlertMarkerIsStructural(t *testing.T) {
-	t.Parallel()
-
-	for name, document := range map[string]string{
-		"outside a blockquote": "[!NOTE]\nwrapped onto this line\n",
-		"an undefined type":    "> [!NOTES]\n> wrapped onto this line\n",
-		"carrying text":        "> [!NOTE] see this\n> wrapped onto this line\n",
-		"below the first line": "> [!NOTE]\n> [!NOTE]\n> wrapped onto this line\n",
-	} {
-		assert.Len(t, analyze(t, "notes.md", document), 1, "%s is not an alert marker", name)
-	}
-}
-
 // TestOneFindingPerBlockHoweverManyTimesItWraps pins the unit of the report. A
 // paragraph wrapped over twenty lines is one mistake and one edit; reporting it
 // nineteen times would make the ratchet move by nineteen for one fix.
@@ -172,7 +98,7 @@ func TestOneFindingPerBlockHoweverManyTimesItWraps(t *testing.T) {
 	diags := analyze(t, "notes.md", "one\ntwo\nthree\nfour\nfive\n")
 
 	require.Len(t, diags, 1)
-	assert.Equal(t, []int{1}, linesOf(diags), "positioned at the first invisible break")
+	assert.Equal(t, []int{1}, linesOf(diags), "positioned at the first reported break")
 }
 
 // TestEveryWrappingConstructIsNamedByItsOwnKind pins that the finding tells an
@@ -270,11 +196,78 @@ func TestLineEndingsAndAByteOrderMarkDoNotMoveAFinding(t *testing.T) {
 	}
 }
 
-// TestACrlfHardBreakIsStillAHardBreak pins that the escape hatch survives a
-// Windows line ending, which is the shape most likely to lose it.
-func TestACrlfHardBreakIsStillAHardBreak(t *testing.T) {
+// TestAFindingNamesHowManySourceLinesTheBlockSpans pins the number in the
+// message. It is the size of the edit being asked for, and it is the whole of
+// what the message tells a reader beyond the rule itself.
+func TestAFindingNamesHowManySourceLinesTheBlockSpans(t *testing.T) {
 	t.Parallel()
 
-	assert.Empty(t, analyze(t, "notes.md", "first line\\\r\nsecond line\r\n"))
-	assert.Empty(t, analyze(t, "notes.md", "first line  \r\nsecond line\r\n"))
+	for spans, document := range map[int]string{
+		2: "one\ntwo\n",
+		3: "one\ntwo\nthree\n",
+		5: "one\ntwo\nthree\nfour\nfive\n",
+	} {
+		diags := analyze(t, "notes.md", document)
+
+		require.Len(t, diags, 1)
+		assert.Contains(t, diags[0].Message, "spans "+strconv.Itoa(spans)+" source lines",
+			"a block occupying %d lines is asked to become one", spans)
+	}
+}
+
+// TestNoFindingNamesAWayToSilenceTheRule pins the message discipline, and it is
+// the reason this rule can be gated at all.
+//
+// A diagnostic is read at the exact moment its reader is looking for the
+// cheapest way to make the gate green, and much of what reads it is an agent
+// applying whatever it finds mechanically to every line it touches. A message
+// naming a spelling this rule leaves alone would be a bypass tutorial delivered
+// by the tool itself: one that turns a rule about how prose is written into a
+// rule about how line endings are spelled, forever, with the gate green.
+//
+// It covers EVERY message this package can emit rather than the wrap finding
+// alone, because a limit notice and a read failure are read in the same moment
+// and by the same reader.
+func TestNoFindingNamesAWayToSilenceTheRule(t *testing.T) {
+	t.Parallel()
+
+	for _, message := range everyMessage(t) {
+		for name, forbidden := range map[string]string{
+			"a backslash":            `\`,
+			"a run of spaces":        "  ",
+			"a markup tag":           "<br",
+			"the word for a space":   "space",
+			"the setting's variable": "YZE_",
+			"the setting's value":    "authored",
+			"the word escape":        "escape",
+		} {
+			assert.NotContains(t, message, forbidden, "%s is a way to silence this rule, and %q names it",
+				name, message)
+		}
+	}
+}
+
+// everyMessage is each distinct message this package emits: a wrapped block, a
+// document past its own limit, a run past the run's limit, and a file the gate
+// could not read — the last in both of its shapes, a path the walk could not
+// enter and a document the reader refused.
+func everyMessage(t *testing.T) []string {
+	t.Helper()
+	contents, files := crowded(30, 500)
+	contents["huge.md"] = strings.Repeat("wrapped one\nwrapped two\n\n", 1200)
+	messages := map[string]bool{}
+	for _, report := range []goyze.Report{
+		hardwrap.Report(reader(contents), []string{"huge.md", "d0.md", "locked.md"}, nil, hardwrap.DefaultSettings()),
+		hardwrap.Report(reader(contents), files, []string{"locked"}, hardwrap.DefaultSettings()),
+	} {
+		for _, diag := range report.Diagnostics {
+			messages[diag.Message] = true
+		}
+	}
+	found := make([]string, 0, len(messages))
+	for message := range messages {
+		found = append(found, message)
+	}
+	require.Len(t, found, 5, "every distinct message this package emits")
+	return found
 }

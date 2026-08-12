@@ -37,9 +37,10 @@ func TestOnlyConfiguredDocumentsAreRead(t *testing.T) {
 func TestAnOptedInDocumentIsParsedAsMarkdown(t *testing.T) {
 	t.Parallel()
 
-	docs := hardwrap.ConfiguredDocuments(func(string) string { return ".txt" })
+	settings, err := hardwrap.ConfiguredSettings(environment(map[string]string{documentsVariable: ".txt"}))
+	require.NoError(t, err)
 
-	diags, err := hardwrap.Diagnostics("notes.txt", "a paragraph that is\nwrapped\n\n```\nnot\nprose\n```\n", docs)
+	diags, err := hardwrap.Diagnostics("notes.txt", "a paragraph that is\nwrapped\n\n```\nnot\nprose\n```\n", settings)
 
 	require.NoError(t, err)
 	require.Len(t, diags, 1, "its prose is judged and its fenced block is not")
@@ -54,7 +55,7 @@ func TestADocumentTooLargeToReadIsRefused(t *testing.T) {
 
 	over := strings.Repeat("x", int(hardwrap.SizeLimit)+1)
 
-	diags, err := hardwrap.Diagnostics("huge.md", hardwrap.Source(over), hardwrap.DefaultDocuments())
+	diags, err := hardwrap.Diagnostics("huge.md", hardwrap.Source(over), hardwrap.DefaultSettings())
 
 	assert.Empty(t, diags, "a tool failure yields no findings")
 	require.ErrorIs(t, err, hardwrap.ErrTooLarge)
@@ -70,7 +71,7 @@ func TestADocumentExactlyAtTheLimitIsStillRead(t *testing.T) {
 	const head = "a paragraph that is\nwrapped\n"
 	exact := head + strings.Repeat("x", int(hardwrap.SizeLimit)-len(head))
 
-	diags, err := hardwrap.Diagnostics("big.md", hardwrap.Source(exact), hardwrap.DefaultDocuments())
+	diags, err := hardwrap.Diagnostics("big.md", hardwrap.Source(exact), hardwrap.DefaultSettings())
 
 	require.NoError(t, err)
 	assert.Len(t, diags, 1, "the document at the limit is read and judged")
@@ -86,7 +87,7 @@ func TestADocumentNestedPastTheBoundIsRefusedRatherThanParsed(t *testing.T) {
 
 	deep := strings.Repeat(">", 65) + " a\n" + strings.Repeat(">", 65) + " b\n"
 
-	diags, err := hardwrap.Diagnostics("deep.md", hardwrap.Source(deep), hardwrap.DefaultDocuments())
+	diags, err := hardwrap.Diagnostics("deep.md", hardwrap.Source(deep), hardwrap.DefaultSettings())
 
 	assert.Empty(t, diags, "a tool failure yields no findings")
 	assert.ErrorIs(t, err, hardwrap.ErrTooDeep)
@@ -101,7 +102,7 @@ func TestADocumentAtTheNestingBoundIsStillJudged(t *testing.T) {
 	marker := strings.Repeat(">", 64)
 	deep := marker + " a quotation that is\n" + marker + " wrapped\n"
 
-	diags, err := hardwrap.Diagnostics("deep.md", hardwrap.Source(deep), hardwrap.DefaultDocuments())
+	diags, err := hardwrap.Diagnostics("deep.md", hardwrap.Source(deep), hardwrap.DefaultSettings())
 
 	require.NoError(t, err)
 	assert.Len(t, diags, 1)
@@ -118,7 +119,7 @@ func TestADocumentThatIsNotTextIsRefused(t *testing.T) {
 	diags, err := hardwrap.Diagnostics(
 		"blob.md",
 		hardwrap.Source([]byte{0xff, 0xfe, 0x00}),
-		hardwrap.DefaultDocuments(),
+		hardwrap.DefaultSettings(),
 	)
 
 	assert.Empty(t, diags)
@@ -151,6 +152,6 @@ func TestADocumentExactlyAtItsLimitCarriesNoTruncationNotice(t *testing.T) {
 
 	require.Len(t, diags, 1000)
 	for _, diag := range diags {
-		assert.Contains(t, diag.Message, "is hard-wrapped", "no notice among them")
+		assert.Contains(t, diag.Message, wrapMarker, "no notice among them")
 	}
 }

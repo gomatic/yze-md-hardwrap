@@ -20,7 +20,10 @@ import (
 // declined to read would report nothing about it and say nothing about having
 // skipped it.
 func TestDiscoveryClaimsWhatTheAnalyzerReads(t *testing.T) {
-	docs := hardwrap.ConfiguredDocuments(func(string) string { return ".txt" })
+	docs, err := hardwrap.ConfiguredDocuments(func(name string) string {
+		return map[string]string{"YZE_HARDWRAP_DOCUMENTS": ".txt"}[name]
+	})
+	require.NoError(t, err)
 	claims := discovery(docs).Claims
 
 	for _, path := range []string{"a/README.md", "a/guide.markdown", "a/UPPER.MD", "a/notes.txt"} {
@@ -43,9 +46,7 @@ func TestOptingInReachesTheWalk(t *testing.T) {
 	require.Equal(t, 0, run([]string{dir}))
 	assert.NotContains(t, buf.String(), "notes.txt", "unconfigured, plain text is not prose")
 
-	original := lookupEnv
-	lookupEnv = func(string) string { return ".txt" }
-	t.Cleanup(func() { lookupEnv = original })
+	withEnvironment(t, map[string]string{"YZE_HARDWRAP_DOCUMENTS": ".txt"})
 	buf = swapStdout(t)
 
 	require.Equal(t, 0, run([]string{dir}))

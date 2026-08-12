@@ -16,15 +16,18 @@ import (
 
 // FuzzDiagnostics asserts, on every input rather than merely exercising:
 //
-//   - Diagnostics never panics, on any path or content.
+//   - Diagnostics never panics, on any path or content, under either run.
 //   - A tool failure carries no findings, so a refusal is never mistaken for a
 //     clean pass over a document nobody read.
 //   - Every diagnostic carries this rule's identity and a navigable position
 //     that lies inside the document.
-//   - A hard-wrapped finding never names a line the author ended with an
-//     EXPLICIT break. That is the inverse of the whole rule: the escape hatch
-//     the format provides has to hold for every input, not for the shapes a
-//     test happened to think of.
+//   - The CONFIGURED run reports no more than the default one. That is the
+//     property the whole design rests on: the setting can only ever subtract,
+//     so no value of it and no shape of document can be stricter than an
+//     unconfigured run, and the default is the strictest run there is.
+//   - Under the configured run, a finding never names a line ending in one of
+//     the format's own break spellings — the inverse of what that run promises,
+//     held for every input rather than for the shapes a test thought of.
 func FuzzDiagnostics(f *testing.F) {
 	for _, seed := range []string{
 		"", "\n", "\r\n", "one line\n", "one\ntwo\n", "one\\\ntwo\n", "one  \ntwo\n", "one\\\\\ntwo\n",
@@ -44,19 +47,39 @@ func FuzzDiagnostics(f *testing.F) {
 	f.Add("guide.markdown", "a\nb\n")
 
 	f.Fuzz(func(t *testing.T, path, source string) {
-		diags, err := hardwrap.Diagnostics(hardwrap.Path(path), hardwrap.Source(source), hardwrap.DefaultDocuments())
-		if err != nil {
-			if len(diags) != 0 {
-				t.Fatalf("a tool failure yields no findings, got %d", len(diags))
-			}
-			return
+		strict := fuzzed(t, path, source, hardwrap.DefaultSettings())
+		authored := fuzzed(t, path, source, hardwrap.Settings{
+			Documents: hardwrap.DefaultDocuments(),
+			Breaks:    hardwrap.AuthoredBreaks,
+		})
+		if len(authored) > len(strict) {
+			t.Fatalf("the configured run reported %d findings where the default one reported %d",
+				len(authored), len(strict))
 		}
 		lines := strings.Split(source, "\n")
-		for _, diag := range diags {
+		for _, diag := range strict {
+			assertNavigable(t, diag, len(lines))
+		}
+		for _, diag := range authored {
 			assertNavigable(t, diag, len(lines))
 			assertNotAnExplicitBreak(t, diag, lines)
 		}
 	})
+}
+
+// fuzzed is one run's findings, holding the refusal contract: a tool failure
+// carries no findings, so a refusal is never mistaken for a clean pass over a
+// document nobody read.
+func fuzzed(t *testing.T, path, source string, settings hardwrap.Settings) []goyze.Diagnostic {
+	t.Helper()
+	diags, err := hardwrap.Diagnostics(hardwrap.Path(path), hardwrap.Source(source), settings)
+	if err != nil && len(diags) != 0 {
+		t.Fatalf("a tool failure yields no findings, got %d", len(diags))
+	}
+	if err != nil {
+		return nil
+	}
+	return diags
 }
 
 // assertNavigable pins that a finding can be opened: this rule's identity, and
@@ -74,13 +97,13 @@ func assertNavigable(t *testing.T, diag goyze.Diagnostic, count int) {
 	}
 }
 
-// assertNotAnExplicitBreak pins the inverse of the rule. A line ending in two
-// spaces, or in an odd run of backslashes, carries a break the author asked to
-// be SEEN — reporting one would leave no way to write a visible line break at
-// all.
+// assertNotAnExplicitBreak pins what the CONFIGURED run promises. A line ending
+// in two spaces, or in an odd run of backslashes, is one of the format's own
+// break spellings; a run told to allow those and then reporting one would leave
+// its own configuration meaning nothing.
 func assertNotAnExplicitBreak(t *testing.T, diag goyze.Diagnostic, lines []string) {
 	t.Helper()
-	if !strings.Contains(diag.Message, "is hard-wrapped") {
+	if !strings.Contains(diag.Message, wrapMarker) {
 		return
 	}
 	text := strings.TrimSuffix(lines[diag.Line-1], "\r")
@@ -125,19 +148,39 @@ func FuzzWrappedProseIsAlwaysFound(f *testing.F) {
 		if swallows(header) {
 			return
 		}
-		const canary = "the canary paragraph that is\nwrapped over two lines\n"
-		diags, err := hardwrap.Diagnostics("notes.md", hardwrap.Source(header+"\n\n"+canary),
-			hardwrap.DefaultDocuments())
-		if err != nil {
+		for _, canary := range canaries {
+			assertCanaryIsFound(t, header, canary)
+		}
+	})
+}
+
+// canaries are the wrapped paragraph in every spelling of a line ending there
+// is: a bare newline, and each of the spellings the format renders. The default
+// run must find ALL of them — a spelling that goes unreported is not a nuance,
+// it is the rule's off switch, available per line and needing no configuration.
+var canaries = map[string]string{
+	"a bare newline":        "the canary paragraph that is\nwrapped over two lines\n",
+	"two trailing spaces":   "the canary paragraph that is  \nwrapped over two lines\n",
+	"a trailing backslash":  "the canary paragraph that is\\\nwrapped over two lines\n",
+	"a run of backslashes":  "the canary paragraph that is\\\\\\\nwrapped over two lines\n",
+	"a trailing markup tag": "the canary paragraph that is<br>\nwrapped over two lines\n",
+}
+
+// assertCanaryIsFound pins that a wrapped paragraph beneath a header is
+// reported by the default run.
+func assertCanaryIsFound(t *testing.T, header, canary string) {
+	t.Helper()
+	diags, err := hardwrap.Diagnostics("notes.md", hardwrap.Source(header+"\n\n"+canary),
+		hardwrap.DefaultSettings())
+	if err != nil {
+		return
+	}
+	for _, diag := range diags {
+		if strings.Contains(diag.Message, wrapMarker) {
 			return
 		}
-		for _, diag := range diags {
-			if strings.Contains(diag.Message, "is hard-wrapped") {
-				return
-			}
-		}
-		t.Fatalf("a hard-wrapped paragraph went unreported after header %q", header)
-	})
+	}
+	t.Fatalf("a hard-wrapped paragraph spelled %q went unreported after header %q", canary, header)
 }
 
 // swallows reports a header that legitimately absorbs everything after it, so

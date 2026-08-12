@@ -12,7 +12,17 @@ import (
 	"path"
 	"strings"
 	"unicode"
+
+	errs "github.com/gomatic/go-error"
 )
+
+// ErrDocumentPath reports a configured entry that names a path. An entry is
+// matched against a file's whole NAME or its extension, neither of which can
+// hold a separator, so `docs/notes.txt` claims nothing — and claiming nothing
+// silently is how a repository comes to believe it is being read. It is refused
+// rather than trimmed to the name it contains, because the two mean different
+// things and only the author of the line knows which was meant.
+const ErrDocumentPath errs.Const = "a document entry is a file name or an extension, never a path"
 
 // selector is one lower-cased spelling a document is claimed by: an extension
 // (".md") or a whole file name ("NOTES").
@@ -79,7 +89,12 @@ func DefaultDocuments() Documents {
 // turn markdown off would let a repository opt out of the rule entirely from a
 // file the rule itself cannot see, which is the audit-trail-free opt-out every
 // gate has to refuse.
-func ConfiguredDocuments(lookup func(string) string) Documents {
+//
+// An entry this run cannot apply is an ERROR rather than an entry ignored. See
+// [ErrDocumentPath]: configuration that does nothing and says nothing is the
+// worst of the three possible outcomes, because the repository that wrote it
+// believes the opposite of what is happening.
+func ConfiguredDocuments(lookup func(string) string) (Documents, error) {
 	docs := DefaultDocuments()
 	configured := lookup(documentsVariable)
 	// No emptiness guard: a field from FieldsFunc is by construction a run of
@@ -88,10 +103,16 @@ func ConfiguredDocuments(lookup func(string) string) Documents {
 	// a condition no input can make false — a check that looks like one and
 	// tests nothing.
 	for _, entry := range strings.FieldsFunc(configured, func(r rune) bool { return isEntrySeparator(separatorRune(r)) }) {
+		if strings.ContainsRune(entry, pathSeparator) {
+			return nil, ErrDocumentPath.With(nil, "variable", documentsVariable, "entry", entry)
+		}
 		docs[selector(strings.ToLower(entry))] = true
 	}
-	return docs
+	return docs, nil
 }
+
+// pathSeparator is the character that makes an entry a path rather than a name.
+const pathSeparator = '/'
 
 // separatorRune is one character standing between two entries of the list.
 type separatorRune rune

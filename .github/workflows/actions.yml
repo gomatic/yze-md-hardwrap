@@ -1,0 +1,42 @@
+# Managed by nicerobot/tools.repository (distribute-build)
+name: actions
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - ".actionlint*"
+      - ".standards.yaml"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - ".actionlint*"
+      - ".standards.yaml"
+  schedule:
+    - cron: "55 16 15 * *"
+  workflow_dispatch:
+concurrency:
+  group: actions-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  actions:
+    # A scheduled run re-lints against the floating ci/actions@v2 image with no push;
+    # distribute substitutes the per-repo cron above. Skip forks (no-op for push/PR).
+    if: github.event_name != 'schedule' || github.event.repository.fork == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # A submodule is part of the checkout, not an optional extra: a repo
+          # that depends on one (www.adm.one carries pike and watchword) cannot
+          # install or build without it, and the failure is an unresolvable
+          # dependency rather than anything the gate can explain.
+          submodules: recursive
+      - uses: nicerobot/tools.build/ci/actions@v2

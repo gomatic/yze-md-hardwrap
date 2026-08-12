@@ -1,0 +1,120 @@
+package hardwrap
+
+// Which files this rule reads, and how a run is told to read more of them.
+//
+// Markdown is the default and everything else is opt-in, because the rule's
+// exactness comes from parsing: a file is judged by what a CommonMark parser
+// says its blocks are, and that answer is only meaningful for a file that IS
+// markdown. There is no plain-text mode and no heuristic fallback — an enabled
+// file is parsed as markdown, whatever it is called.
+
+import (
+	"path"
+	"strings"
+	"unicode"
+)
+
+// selector is one lower-cased spelling a document is claimed by: an extension
+// (".md") or a whole file name ("NOTES").
+//
+// Both live in ONE set and are matched against both spellings of a path,
+// because the distinction is already in the text: a name cannot be confused
+// with an extension unless it begins with a dot, and a file that begins with a
+// dot has the same string for both. Splitting them into two configured lists
+// would be two vocabularies for one question.
+type selector string
+
+// baseName is a file's final path element, lower-cased.
+type baseName string
+
+// Documents is the set of file kinds a run reads. It is a value passed in
+// rather than ambient state, so the analyzer, the command's discovery and every
+// test agree about which files are in scope by construction — a walk that
+// claims a file the analyzer then declines to read reports nothing about it and
+// says nothing about having skipped it.
+type Documents map[selector]bool
+
+// markdownSelectors are the extensions that are markdown by name and are
+// therefore always read. They are the whole default: an analyzer that read
+// `.txt` or every extensionless file by default would parse Makefiles, licences
+// and binaries as prose.
+const (
+	markdownExt     selector = ".md"
+	markdownLongExt selector = ".markdown"
+)
+
+// documentsVariable is the environment variable a run is configured from: a
+// comma- or whitespace-separated list of extensions (".txt") and whole file
+// names ("NOTES"), each of which is read AS MARKDOWN in addition to the
+// defaults.
+//
+// The environment is the configuration surface because it is the one the
+// stickler runner already has for a tool it invokes as a subprocess: a repo's
+// .stickler.yaml sets it through the `env:` of the runner spec it defines, so
+// opting a repository into `.txt` is a line of that repository's own config and
+// no change here. It is also how the sibling analyzer yze-yml-wfpolicy is
+// configured, and one mechanism for the family is worth more than a marginally
+// prettier second one.
+const documentsVariable = "YZE_HARDWRAP_DOCUMENTS"
+
+// licenceStems are the documents that are hard-wrapped by convention and are
+// not the repository's to reflow. A licence's text is a quotation of somebody
+// else's words — reflowing it changes a document whose whole value is being
+// unchanged — so it is exempt whatever it is called next and however a run is
+// configured. Both spellings are named because both are in use, and a rule that
+// exempted one would report the other for the same text.
+var licenceStems = map[baseName]bool{"license": true, "licence": true}
+
+// DefaultDocuments is the set read with no configuration at all: markdown, by
+// its two extensions.
+func DefaultDocuments() Documents {
+	return Documents{markdownExt: true, markdownLongExt: true}
+}
+
+// ConfiguredDocuments is [DefaultDocuments] plus whatever this run was told to
+// read as well. It is a function of an injected lookup rather than a package
+// variable so a test sees a configuration change without exporting one, and so
+// an unset variable is plainly the default set rather than a nil surprise.
+//
+// The defaults are ADDED to rather than replaced. A configuration that could
+// turn markdown off would let a repository opt out of the rule entirely from a
+// file the rule itself cannot see, which is the audit-trail-free opt-out every
+// gate has to refuse.
+func ConfiguredDocuments(lookup func(string) string) Documents {
+	docs := DefaultDocuments()
+	configured := lookup(documentsVariable)
+	for _, entry := range strings.FieldsFunc(configured, func(r rune) bool { return isEntrySeparator(separatorRune(r)) }) {
+		if name := selector(strings.ToLower(strings.TrimSpace(entry))); name != "" {
+			docs[name] = true
+		}
+	}
+	return docs
+}
+
+// separatorRune is one character standing between two entries of the list.
+type separatorRune rune
+
+// isEntrySeparator reports the characters that stand between two entries of the
+// configured list. Whitespace separates as well as a comma, because the
+// documented way to deliver this value is a YAML `env:` entry, where a block
+// scalar — one entry per line — is the natural shape for a list.
+func isEntrySeparator(between separatorRune) bool {
+	return between == ',' || unicode.IsSpace(rune(between))
+}
+
+// Reads reports a path this run analyzes: a licence never, and otherwise any
+// file whose whole name or whose extension was configured.
+func (d Documents) Reads(at Path) bool {
+	base := baseName(strings.ToLower(path.Base(string(at))))
+	if licenceStems[stemOf(base)] {
+		return false
+	}
+	return d[selector(base)] || d[selector(path.Ext(string(base)))]
+}
+
+// stemOf is a file name without its extension, which is what a licence is
+// recognised by: `LICENSE`, `LICENSE.md` and `LICENSE.txt` are one document in
+// three spellings.
+func stemOf(base baseName) baseName {
+	return baseName(strings.TrimSuffix(string(base), path.Ext(string(base))))
+}

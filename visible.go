@@ -21,23 +21,26 @@ import (
 func (d scanned) reported(node ast.Node, breaks []lineBreak) []byteOffset {
 	kept := make([]byteOffset, 0, len(breaks))
 	for _, at := range breaks {
-		if !d.isVisible(node, at) {
+		if d.reports(node, at) {
 			kept = append(kept, at.at)
 		}
 	}
 	return kept
 }
 
-// isVisible reports a break this run leaves alone.
+// reports is the decision itself, for one break.
 //
 // A GitHub alert marker is left alone in EVERY run: it is not a way of writing
 // a line ending, it is a construct whose first newline is structural, and
 // joining it deletes the alert. Everything else depends on what the run was
 // configured with — see [Breaks], and note that the default configuration
 // leaves nothing alone, which is the whole point of it.
-func (d scanned) isVisible(node ast.Node, at lineBreak) bool {
+func (d scanned) reports(node ast.Node, at lineBreak) bool {
 	text := d.lineAt(at.at)
-	return d.opensAlert(node, at.at, text) || (d.breaks == AuthoredBreaks && at.isAuthored(text))
+	if d.opensAlert(node, at.at, text) {
+		return false
+	}
+	return d.breaks != AuthoredBreaks || !at.isAuthored(text)
 }
 
 // isAuthored reports a break the FORMAT spells as one meant to be seen.
@@ -109,17 +112,4 @@ func (d scanned) lineAt(at byteOffset) line {
 // seen.
 func trailingBackslashes(text line) int {
 	return len(text) - len(strings.TrimRight(string(text), `\`))
-}
-
-// blockName is what this block is called in a finding.
-func blockName(node ast.Node) blockKind {
-	if name, isNamed := blockNames[node.Kind()]; isNamed {
-		return name
-	}
-	if parent := node.Parent(); parent != nil {
-		if name, isNamed := blockNames[parent.Kind()]; isNamed {
-			return name
-		}
-	}
-	return "block"
 }

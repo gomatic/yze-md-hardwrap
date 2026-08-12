@@ -66,6 +66,19 @@ var blockNames = map[ast.NodeKind]blockKind{
 	extast.KindDefinitionDescription: "definition",
 }
 
+// blockName is what this block is called in a finding.
+func blockName(node ast.Node) blockKind {
+	if name, isNamed := blockNames[node.Kind()]; isNamed {
+		return name
+	}
+	if parent := node.Parent(); parent != nil {
+		if name, isNamed := blockNames[parent.Kind()]; isNamed {
+			return name
+		}
+	}
+	return "block"
+}
+
 // scanned is one document as everything below reads it: the bytes that were
 // parsed, where its lines begin, how many lines were taken off its top — so a
 // position from the parser becomes the line an author's editor shows — and how

@@ -144,7 +144,7 @@ const spannedBeyondTheLastBreak lineCount = 2
 //
 // The descent skips inline nodes because they hold no blocks; that is a saving,
 // not a correctness guard — what keeps one wrap from being reported twice is
-// [softBreaks] refusing to cross into a nested block.
+// [lineBreaks] refusing to cross into a nested block.
 func blocks(root ast.Node, into []ast.Node) []ast.Node {
 	for child := root.FirstChild(); child != nil; child = child.NextSibling() {
 		if !blockNodes[child.Type()] {

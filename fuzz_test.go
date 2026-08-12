@@ -97,3 +97,80 @@ func assertNotAnExplicitBreak(t *testing.T, diag goyze.Diagnostic, lines []strin
 func backslashes(text string) int {
 	return len(text) - len(strings.TrimRight(text, `\`))
 }
+
+// FuzzWrappedProseIsAlwaysFound drives the PRESENCE direction, which the target
+// above cannot reach: it asserts only that nothing wrong is reported, and a rule
+// that reported nothing at all would satisfy it completely. That is not a
+// theoretical gap — the two worst defects this analyzer has had were both
+// SILENCES, a delimiter pair that swallowed a whole document and a claim that
+// exempted one.
+//
+// The property: a hard-wrapped paragraph appended to an arbitrary HEADER is
+// reported, for every header that cannot legitimately absorb it. A header is
+// disqualified only by shapes that genuinely extend to the end of a document —
+// an unterminated fence or HTML comment, and an indent that would make the
+// canary code — because those swallow the canary by the rule's own contract
+// rather than by a defect.
+func FuzzWrappedProseIsAlwaysFound(f *testing.F) {
+	for _, header := range []string{
+		"", "# Title\n", "---\ntitle: x\n---\n", "+++\ntitle = \"x\"\n+++\n", "---\n\nprose\n\n---\n",
+		"<!-- @generated -->\n", "<!-- --><span title=\"@generated\"></span>\n", "<!-- x --> @generated\n",
+		"```\nfenced\n```\n", "| a | b |\n| - | - |\n", "> quote\n", "- item\n", "[a]: http://a\n",
+		"<div>\nhtml\n</div>\n", "text\n", "\ufeff# Title\n", "---\r\ntitle: x\r\n---\r\n",
+	} {
+		f.Add(header)
+	}
+
+	f.Fuzz(func(t *testing.T, header string) {
+		if swallows(header) {
+			return
+		}
+		const canary = "the canary paragraph that is\nwrapped over two lines\n"
+		diags, err := hardwrap.Diagnostics("notes.md", hardwrap.Source(header+"\n\n"+canary),
+			hardwrap.DefaultDocuments())
+		if err != nil {
+			return
+		}
+		for _, diag := range diags {
+			if strings.Contains(diag.Message, "is hard-wrapped") {
+				return
+			}
+		}
+		t.Fatalf("a hard-wrapped paragraph went unreported after header %q", header)
+	})
+}
+
+// swallows reports a header that legitimately absorbs everything after it, so
+// the canary below it is not prose this rule judges.
+//
+// It is a deliberately WIDE net rather than a copy of the analyzer's own tests:
+// a precondition that mirrors the implementation shares its mistakes, and this
+// one only ever skips cases — over-excluding costs the property some power,
+// while under-excluding would make it assert something untrue.
+func swallows(header string) bool {
+	lowered := strings.ToLower(header)
+	for _, opener := range absorbing {
+		if strings.Contains(lowered, opener) {
+			return true
+		}
+	}
+	// A generated document is out of scope ENTIRELY, by the ratified rule.
+	if strings.Contains(lowered, "@generated") || strings.Contains(lowered, "do not edit") {
+		return true
+	}
+	// An indent makes what follows a code block rather than a paragraph.
+	return strings.HasPrefix(header, "    ") || strings.HasPrefix(header, "\t") ||
+		strings.Contains(header, "\n    ") || strings.Contains(header, "\n\t")
+}
+
+// absorbing are the constructs whose content continues past a blank line, so
+// that a canary beneath one is inside it rather than beneath it.
+//
+// Two families. The fences, whose closing run must be at least as long as the
+// opening one — which is why counting delimiters is not enough: ```` ``````0 ````
+// opens a six-backtick fence that three backticks would not close. And HTML
+// blocks of CommonMark's types 1 to 5, which end at a specific string rather
+// than at a blank line and so run to the end of the document when that string
+// never comes: `<script>`, `<?`, and every `<!` declaration — `<!A00` is one,
+// and it swallowed a canary that a `<!--` test alone did not cover.
+var absorbing = []string{"```", "~~~", "<!", "<?", "<pre", "<script", "<style", "<textarea"}

@@ -6,15 +6,20 @@ package hardwrap
 // CommonMark has never heard of it. Parsed as markdown, `---` is a thematic
 // break and the `key: value` lines beneath it are a paragraph — or, when a
 // `---` closes the block, a SETEXT HEADING whose text spans every metadata
-// line. That is a hard-wrapped block by this rule's own definition, and it is
-// present in every Hugo content file in the fleet, so leaving it in is not a
-// rare false positive but a finding per content page.
+// line. That is a hard-wrapped block by this rule's own definition, and the
+// fleet holds 1,948 such blocks, so leaving them in is not a rare false
+// positive but a finding per content page.
 //
 // It is removed by TEXT rather than by an extension, and the removed lines are
 // counted rather than blanked, so every finding below still names the line the
 // author's editor shows.
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
 
 // lineOffset is how many lines were removed from the top of a document before
 // it was parsed. Every reported line is measured in the ORIGINAL document, so
@@ -26,7 +31,7 @@ type lineOffset int
 // text in markdown, so recognising it would mean guessing where an object ends
 // in a file that may simply begin with a brace. It is left alone deliberately:
 // under-reading a rare shape is a silence, while mis-reading a common one is a
-// finding on a line nobody wrote.
+// finding on a line nobody wrote. (Fleet count of JSON front matter: zero.)
 const (
 	yamlFrontMatter = "---"
 	tomlFrontMatter = "+++"
@@ -35,16 +40,23 @@ const (
 // withoutFrontMatter is a document's body and how many lines were taken off its
 // top.
 //
-// The opening delimiter must be the FIRST line and a closing one must exist,
-// which is what keeps an ordinary thematic break from swallowing a document: a
-// page whose body opens with `---` and never repeats it is returned untouched.
+// Three things must hold, and the third is the one that matters. The opening
+// delimiter must be the FIRST line; a closing one must exist; and the region
+// between them must really BE the metadata language it claims to be.
+//
+// Without that last test, a delimiter pair is a two-line, audit-trail-free
+// opt-out from the whole rule: wrapping any document in `---` … `---` costs two
+// horizontal rules in the rendered output and deletes every finding in the file.
+// It is also reachable by ACCIDENT, by a page that opens with a decorative
+// thematic break and uses another one later. Found by an adversarial review;
+// the guard that only required a closing delimiter did not cover either case.
 func withoutFrontMatter(text Source) (Source, lineOffset) {
 	first, rest, ok := nextLine(text)
 	if !ok || !opensFrontMatter(first) {
 		return text, 0
 	}
-	body, removed, closed := afterDelimiter(rest, delimiterOf(first))
-	if !closed {
+	region, body, removed, closed := afterDelimiter(rest, delimiterOf(first))
+	if !closed || !isMetadata(region, delimiterOf(first)) {
 		return text, 0
 	}
 	return body, removed + 1
@@ -71,20 +83,79 @@ func delimiterOf(text line) delimiter {
 	return ""
 }
 
-// afterDelimiter is the text following the next line that is exactly this
-// delimiter, how many lines were consumed reaching it, and whether it was found
-// at all.
-func afterDelimiter(text Source, closing delimiter) (Source, lineOffset, bool) {
+// isMetadata reports a region that really is front matter: the language its
+// delimiter claims, not merely text that happens to sit between two of them.
+//
+// It is decided by PARSING first, because that is the exact answer: the region
+// must be a MAPPING, which is the shape metadata takes, while prose wrapped in
+// delimiters parses as a plain scalar or fails outright.
+//
+// Parsing alone is too strict, though, so a SHAPE test stands behind it.
+// Twenty-one of the fleet's 1,947 YAML blocks do not decode — an unquoted colon
+// inside a description, a `{{ }}` placeholder in a template archetype — and
+// Hugo would refuse them too, but they are unmistakably somebody's front matter,
+// and reading them as prose reports a hard-wrapped "heading" nobody wrote. What
+// the shape still refuses is the thing that matters: wrapped PROSE between two
+// delimiters, whose lines carry no key, no marker and no indent.
+func isMetadata(region Source, of delimiter) bool {
+	if of == tomlFrontMatter {
+		return everyLineIsEntry(region, tomlEntry)
+	}
+	return parsesAsMapping(region) || everyLineIsEntry(region, yamlEntry)
+}
+
+// parsesAsMapping reports a region that decodes as a YAML mapping. An EMPTY
+// region is one: `---` immediately closed is the empty metadata a generator
+// writes, and it decodes to a nil map with no error.
+func parsesAsMapping(region Source) bool {
+	var mapping map[string]any
+	return yaml.Unmarshal([]byte(region), &mapping) == nil
+}
+
+// The line shapes each metadata language is written in: a key, a comment, a
+// table header, or the INDENTED continuation of any of them — a list entry
+// among them, since a document's own keys sit at the margin and everything
+// beneath one is indented. A bare `- ` at the margin is deliberately not a
+// shape: it makes the region a YAML sequence rather than a mapping, which is not
+// front matter in any generator, and accepting it let a wrapped list item hide
+// between two delimiters.
+//
+// A TOML region has only this test, because a TOML parser is a dependency — and
+// a file format the standards ban elsewhere — bought for the fleet's single
+// `+++` block.
+var (
+	yamlEntry = regexp.MustCompile(`^(?:[ \t]|#|[^\s:]+[ \t]*:)`)
+	tomlEntry = regexp.MustCompile(`^(?:[ \t]|#|\[[^\]]*\]|[^=\s\[]+[ \t]*=)`)
+)
+
+// everyLineIsEntry reports a region whose every non-blank line is one of its
+// language's shapes.
+func everyLineIsEntry(region Source, entry *regexp.Regexp) bool {
+	for _, text := range strings.Split(string(region), "\n") {
+		if strings.TrimSpace(text) != "" && !entry.MatchString(text) {
+			return false
+		}
+	}
+	return true
+}
+
+// afterDelimiter is the region up to the next line that is this delimiter alone,
+// the text following it, how many lines were consumed reaching it, and whether
+// it was found at all.
+func afterDelimiter(text Source, closing delimiter) (Source, Source, lineOffset, bool) {
+	region := strings.Builder{}
 	for removed := lineOffset(0); ; {
 		current, rest, ok := nextLine(text)
 		if !ok {
-			return "", 0, false
+			return "", "", 0, false
 		}
 		text = rest
 		removed++
 		if delimiterOf(current) == closing {
-			return text, removed, true
+			return Source(region.String()), text, removed, true
 		}
+		// The builder never fails; its error exists for io.Writer's sake.
+		_, _ = region.WriteString(string(current) + "\n")
 	}
 }
 

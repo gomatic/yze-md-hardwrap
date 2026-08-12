@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/yuin/goldmark/ast"
+	mdtext "github.com/yuin/goldmark/text"
 )
 
 // TestOnlyAnHtmlCommentCanCarryTheClaim pins the shape of the exemption at the
@@ -34,4 +35,17 @@ func TestADocumentWithNoBlocksAtAllIsNotGenerated(t *testing.T) {
 	t.Parallel()
 
 	assert.False(t, isGenerated(ast.NewDocument(), nil, newLineIndex("")))
+}
+
+// TestAClaimWithNoCommentAroundItIsNotOne pins the interior test at the node
+// level: the words alone, with no `<!--` anywhere, are text a reader sees
+// however the block is labelled.
+func TestAClaimWithNoCommentAroundItIsNotOne(t *testing.T) {
+	t.Parallel()
+
+	const source = "@generated\n"
+	block := ast.NewHTMLBlock(ast.HTMLBlockType2)
+	block.Lines().Append(mdtext.NewSegment(0, len(source)))
+
+	assert.False(t, declaresGenerated(block, []byte(source), newLineIndex(source)))
 }

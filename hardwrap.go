@@ -54,6 +54,10 @@ const ErrTooLarge = goyze.ErrTooLarge
 // findings invented from whatever byte happened to end a line.
 const ErrNotText errs.Const = "document is not valid UTF-8 text"
 
+// ErrTooDeep reports a document whose containers nest past what this rule will
+// parse. See [nestingLimit] for why a bound on bytes is not a bound on cost.
+const ErrTooDeep errs.Const = "document nests deeper than this rule reads"
+
 // SizeLimit is the largest document read, in bytes. It is exported so the
 // command can refuse a file from its directory entry, BEFORE opening it —
 // asking afterwards costs the file's own size for a rule that then declines to
@@ -108,9 +112,9 @@ const truncationMessage = "%d hard-wrapped blocks in this document, of which %d 
 
 // Diagnostics reports the hard-wrapped blocks of one document.
 //
-// docs decides whether this path is prose at all: markdown by extension always,
-// and anything else only where the run was configured to read it. A path the
-// run does not read yields no findings and no error — it is not this rule's
+// docs decides whether this path is prose at all: markdown by extension, and
+// anything else only where the run was configured to read it. A path the run
+// does not read yields no findings and no error — it is not this rule's
 // business, which is a different answer from "it is clean".
 //
 // A document that is not text yields [ErrNotText], so the caller surfaces a
@@ -141,7 +145,8 @@ func countedDiagnostics(at Path, source Source, docs Documents) ([]goyze.Diagnos
 }
 
 // readable is the document's text once it is known to be text at all: within
-// the size bound, valid UTF-8, and with the byte order mark removed.
+// the size bound, within the nesting bound, valid UTF-8, and with the byte order
+// mark removed.
 func readable(at Path, source Source) (Source, error) {
 	if goyze.ByteCount(len(source)) > SizeLimit {
 		return "", ErrTooLarge.With(nil, "path", string(at), "bytes", len(source))
@@ -149,7 +154,59 @@ func readable(at Path, source Source) (Source, error) {
 	if !utf8.ValidString(string(source)) {
 		return "", ErrNotText.With(nil, "path", string(at))
 	}
-	return Source(strings.TrimPrefix(string(source), byteOrderMark)), nil
+	text := Source(strings.TrimPrefix(string(source), byteOrderMark))
+	if depth := deepest(text); depth > nestingLimit {
+		return "", ErrTooDeep.With(nil, "path", string(at), "depth", int(depth))
+	}
+	return text, nil
+}
+
+// nestingDepth is how many blockquote markers a line opens.
+type nestingDepth int
+
+// nestingLimit bounds how deeply a document may nest before this rule declines
+// to parse it.
+//
+// The SIZE bound does not bound the COST. A markdown parser opens one block
+// parser per container per line, so a document of nested blockquotes costs
+// roughly the square of its depth: 100,000 levels in 200 KB took six seconds,
+// and at the size limit the same shape would run for hours — a checked-in file
+// that hangs the gate, and a gate that can be hung is a gate that gets disabled.
+//
+// The number is twenty times the deepest nesting in the fleet's 4,859 markdown
+// files, which is THREE. It refuses only a document written to be refused, and
+// it refuses it as a FINDING rather than as a silence.
+const nestingLimit nestingDepth = 64
+
+// deepest is the greatest blockquote nesting any line of a document opens.
+func deepest(text Source) nestingDepth {
+	worst := nestingDepth(0)
+	for {
+		current, rest, ok := nextLine(text)
+		if !ok {
+			return worst
+		}
+		text = rest
+		if depth := markerDepth(current); depth > worst {
+			worst = depth
+		}
+	}
+}
+
+// markerDepth is how many blockquote markers open one line. Only the leading
+// run counts — a `>` in prose is a greater-than sign, not a container.
+func markerDepth(text line) nestingDepth {
+	depth := nestingDepth(0)
+	for _, marker := range text {
+		if marker == '>' {
+			depth++
+			continue
+		}
+		if marker != ' ' && marker != '\t' {
+			return depth
+		}
+	}
+	return depth
 }
 
 // truncation is the finding that replaces everything past the limit, so the

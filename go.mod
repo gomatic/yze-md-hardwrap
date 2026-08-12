@@ -7,6 +7,7 @@ require (
 	github.com/gomatic/go-yze v0.12.4
 	github.com/stretchr/testify v1.11.1
 	github.com/yuin/goldmark v1.8.5
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -15,5 +16,4 @@ require (
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

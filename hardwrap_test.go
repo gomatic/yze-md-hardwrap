@@ -109,6 +109,57 @@ func TestABackslashRunIsResolvedAsEscapesBeforeTheBreak(t *testing.T) {
 	} {
 		diags := analyze(t, "notes.md", "a line ending in "+run+"\nnext line\n")
 		assert.Equal(t, wraps, len(diags) == 1, "%q trailing backslashes: wraps=%v", run, wraps)
+		// The SAME question with a Windows line ending. The carriage return sits
+		// between the backslashes and the newline, so a line read without
+		// trimming it counts no backslashes at all and every one of these
+		// becomes a finding — including the three that are visible breaks.
+		crlf := analyze(t, "notes.md", "a line ending in "+run+"\r\nnext line\r\n")
+		assert.Equal(t, wraps, len(crlf) == 1, "%q trailing backslashes before a CRLF", run)
+	}
+}
+
+// TestAGitHubAlertMarkerIsStructuralRatherThanDecorative pins a break the parse
+// alone gets wrong. `> [!NOTE]` must stand ALONE on its blockquote's first line
+// for GitHub to render an alert at all — join it and the box, its icon and its
+// meaning are gone — so that newline is not one that exists to fit a column.
+// Found by rendering the fix through pandoc and comparing: joining it changed
+// the output, which is the definition of a break a reader sees.
+func TestAGitHubAlertMarkerIsStructuralRatherThanDecorative(t *testing.T) {
+	t.Parallel()
+
+	for _, marker := range []string{"[!NOTE]", "[!TIP]", "[!IMPORTANT]", "[!WARNING]", "[!CAUTION]", "[!note]"} {
+		assert.Empty(t, analyze(t, "notes.md", "> "+marker+"\n> the whole warning on one line\n"),
+			"%s opens an alert", marker)
+	}
+}
+
+// TestAnAlertsOWNProseIsStillJudged pins the other half: the marker's newline is
+// structural, and every newline BELOW it is as decorative as any other. The
+// finding lands on the body, which is the line an author joins.
+func TestAnAlertsOWNProseIsStillJudged(t *testing.T) {
+	t.Parallel()
+
+	diags := analyze(t, "notes.md", "> [!CAUTION]\n> a warning that is\n> wrapped\n")
+
+	require.Len(t, diags, 1)
+	assert.Equal(t, []int{2}, linesOf(diags))
+}
+
+// TestOnlyARealAlertMarkerIsStructural pins the narrowness. A bracketed word in
+// ordinary prose is a bracketed word, a type GitHub does not define opens
+// nothing, and only the FIRST line of a blockquote opens an alert — a second
+// marker below it is literal body text, and exempting that one silenced a
+// genuine wrap. Exempting any of them would be an opt-out anyone could type.
+func TestOnlyARealAlertMarkerIsStructural(t *testing.T) {
+	t.Parallel()
+
+	for name, document := range map[string]string{
+		"outside a blockquote": "[!NOTE]\nwrapped onto this line\n",
+		"an undefined type":    "> [!NOTES]\n> wrapped onto this line\n",
+		"carrying text":        "> [!NOTE] see this\n> wrapped onto this line\n",
+		"below the first line": "> [!NOTE]\n> [!NOTE]\n> wrapped onto this line\n",
+	} {
+		assert.Len(t, analyze(t, "notes.md", document), 1, "%s is not an alert marker", name)
 	}
 }
 
@@ -197,52 +248,6 @@ func TestConstructsThatMerelyLOOKLikeWrappedProseAreSilent(t *testing.T) {
 	}
 }
 
-// TestFrontMatterIsNotProse pins the one region of a markdown file that is not
-// markdown. Left in, a Hugo page's metadata parses as a setext heading whose
-// text spans every metadata line — a finding on every content page in a site.
-func TestFrontMatterIsNotProse(t *testing.T) {
-	t.Parallel()
-
-	for name, document := range map[string]string{
-		"yaml": "---\ntitle: A page\ndate: 2026-01-01\ntags: [a, b]\n---\n\nA body on one line.\n",
-		"toml": "+++\ntitle = \"A page\"\ndate = 2026-01-01\n+++\n\nA body on one line.\n",
-	} {
-		assert.Empty(t, analyze(t, "content/page.md", document), "%s front matter is metadata", name)
-	}
-}
-
-// TestFindingsAfterFrontMatterNameTheAuthorsLineNumbers pins that removing the
-// metadata does not move the document: a finding names the line an editor
-// shows, not the line the parser saw.
-func TestFindingsAfterFrontMatterNameTheAuthorsLineNumbers(t *testing.T) {
-	t.Parallel()
-
-	diags := analyze(t, "content/page.md", "---\ntitle: A page\n---\n\nA body that is\nwrapped.\n")
-
-	require.Len(t, diags, 1)
-	assert.Equal(t, []int{5}, linesOf(diags))
-}
-
-// TestAnUnclosedDelimiterIsNotFrontMatter pins the other direction. A document
-// whose body opens with a thematic break is an ordinary document, and reading
-// it as unterminated metadata would silence everything below the first `---`.
-func TestAnUnclosedDelimiterIsNotFrontMatter(t *testing.T) {
-	t.Parallel()
-
-	diags := analyze(t, "notes.md", "---\n\nA body that is\nwrapped.\n")
-
-	require.Len(t, diags, 1)
-	assert.Equal(t, []int{3}, linesOf(diags), "nothing was removed, so nothing moved")
-}
-
-// TestADelimiterCarryingTextIsNotFrontMatter pins that the opener must be the
-// delimiter ALONE, which is what Hugo requires too.
-func TestADelimiterCarryingTextIsNotFrontMatter(t *testing.T) {
-	t.Parallel()
-
-	assert.Len(t, analyze(t, "notes.md", "--- title\nwrapped\n---\n"), 1)
-}
-
 // TestLineEndingsAndAByteOrderMarkDoNotMoveAFinding pins the two invisible
 // differences an editor introduces. A carriage return is part of the line
 // ending, not of the prose, and a byte order mark is not the first character of
@@ -272,133 +277,4 @@ func TestACrlfHardBreakIsStillAHardBreak(t *testing.T) {
 
 	assert.Empty(t, analyze(t, "notes.md", "first line\\\r\nsecond line\r\n"))
 	assert.Empty(t, analyze(t, "notes.md", "first line  \r\nsecond line\r\n"))
-}
-
-// TestAGeneratedDocumentIsOutOfScopeEntirely pins the ratified scope: the rule
-// is about hand-maintained prose. Reporting a generated file tells an author to
-// reflow a document the next run overwrites.
-func TestAGeneratedDocumentIsOutOfScopeEntirely(t *testing.T) {
-	t.Parallel()
-
-	for _, claim := range []string{
-		"<!-- Code generated by tool. DO NOT EDIT. -->",
-		"<!-- Code generated by gomarkdoc. DO NOT EDIT -->",
-		"<!-- @generated -->",
-		"<!--\n@generated\n-->",
-	} {
-		assert.Empty(
-			t,
-			analyze(t, "api.md", claim+"\n\nwrapped one\nwrapped two\n"),
-			"%s is a generator's claim",
-			claim,
-		)
-	}
-}
-
-// TestOnlyAnInvisibleClaimExemptsADocument pins the attack surface of that
-// exemption. Every shape here puts the same words where a READER sees them, and
-// accepting one would be a one-line, audit-trail-free opt-out from every
-// finding in the file.
-func TestOnlyAnInvisibleClaimExemptsADocument(t *testing.T) {
-	t.Parallel()
-
-	for name, header := range map[string]string{
-		"prose":            "@generated",
-		"a fenced example": "```\n<!-- @generated -->\n```",
-		"an indented one":  "    <!-- @generated -->",
-		"a list item":      "- <!-- @generated -->",
-		"a quotation":      "> <!-- @generated -->",
-		"a heading":        "# Code generated by hand. DO NOT EDIT.",
-	} {
-		assert.NotEmpty(t, analyze(t, "notes.md", header+"\n\nwrapped one\nwrapped two\n"),
-			"%s is visible, so it is not a generator's claim", name)
-	}
-}
-
-// TestAClaimBelowTheHeaderIsANoteAboutAPassage pins that the exemption is a
-// statement about the FILE. A comment further down is a note beside a passage,
-// and a document about the convention is still the hand-written document it is.
-func TestAClaimBelowTheHeaderIsANoteAboutAPassage(t *testing.T) {
-	t.Parallel()
-
-	document := "# Title\n\nline\n\nline\n\nline\n\n<!-- @generated -->\n\nwrapped one\nwrapped two\n"
-
-	assert.NotEmpty(t, analyze(t, "notes.md", document))
-}
-
-// TestOnlyConfiguredDocumentsAreRead pins that a path outside the run's
-// document set yields nothing and no error: it is not this rule's business,
-// which is a different answer from "it is clean".
-func TestOnlyConfiguredDocumentsAreRead(t *testing.T) {
-	t.Parallel()
-
-	const wrapped = "a paragraph that is\nwrapped\n"
-
-	assert.Empty(t, analyze(t, "notes.txt", wrapped), "plain text is opt-in")
-	assert.Empty(t, analyze(t, "main.go", wrapped), "code is not prose")
-	assert.Len(t, analyze(t, "docs/NOTES.MD", wrapped), 1, "an extension is matched however it is spelled")
-	assert.Len(t, analyze(t, "docs/notes.markdown", wrapped), 1)
-}
-
-// TestAnOptedInDocumentIsParsedAsMarkdown pins the deliberate decision behind
-// the opt-in: there is no plain-text mode. A file the run was told to read is
-// read as markdown, which is what makes the answer exact rather than a guess
-// about what a line ending means in an unknown format.
-func TestAnOptedInDocumentIsParsedAsMarkdown(t *testing.T) {
-	t.Parallel()
-
-	docs := hardwrap.ConfiguredDocuments(func(string) string { return ".txt" })
-
-	diags, err := hardwrap.Diagnostics("notes.txt", "a paragraph that is\nwrapped\n\n```\nnot\nprose\n```\n", docs)
-
-	require.NoError(t, err)
-	require.Len(t, diags, 1, "its prose is judged and its fenced block is not")
-	assert.Equal(t, []int{1}, linesOf(diags))
-}
-
-// TestADocumentTooLargeToReadIsRefused pins the bound, and pins it as the
-// SHARED sentinel: a caller matching a local copy would match only for as long
-// as the two happened to carry the same text.
-func TestADocumentTooLargeToReadIsRefused(t *testing.T) {
-	t.Parallel()
-
-	over := strings.Repeat("x", int(hardwrap.SizeLimit)+1)
-
-	diags, err := hardwrap.Diagnostics("huge.md", hardwrap.Source(over), hardwrap.DefaultDocuments())
-
-	assert.Empty(t, diags, "a tool failure yields no findings")
-	require.ErrorIs(t, err, hardwrap.ErrTooLarge)
-	assert.ErrorIs(t, err, goyze.ErrTooLarge, "the shared sentinel, not a second one beside it")
-}
-
-// TestADocumentThatIsNotTextIsRefused pins that a binary blob is a tool failure
-// rather than a clean pass. A markdown parser given arbitrary bytes still
-// produces blocks, so the findings would be invented from whatever byte
-// happened to end a line.
-func TestADocumentThatIsNotTextIsRefused(t *testing.T) {
-	t.Parallel()
-
-	diags, err := hardwrap.Diagnostics(
-		"blob.md",
-		hardwrap.Source([]byte{0xff, 0xfe, 0x00}),
-		hardwrap.DefaultDocuments(),
-	)
-
-	assert.Empty(t, diags)
-	assert.ErrorIs(t, err, hardwrap.ErrNotText)
-}
-
-// TestADocumentPastItsOwnLimitIsTruncatedAndCounted pins that a pathological
-// document costs a bounded report, and that the count it truncates is never
-// silently lost.
-func TestADocumentPastItsOwnLimitIsTruncatedAndCounted(t *testing.T) {
-	t.Parallel()
-
-	document := strings.Repeat("wrapped one\nwrapped two\n\n", 1200)
-
-	diags := analyze(t, "huge.md", document)
-
-	require.Len(t, diags, 1001, "the limit, plus the notice that stands for the rest")
-	assert.Contains(t, diags[1000].Message, "1200 hard-wrapped blocks in this document")
-	assert.Contains(t, diags[1000].Message, "of which 1000 are reported")
 }

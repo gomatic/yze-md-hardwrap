@@ -57,8 +57,8 @@ type blockKind string
 // is the construct an author would recognise.
 //
 // A definition TERM is deliberately absent: each line above a `:` is a term of
-// its own, so a term cannot span lines and an entry for it would name a finding
-// nothing can produce.
+// its own, so two lines are two terms rather than one term wrapped, and an entry
+// for it would name a finding nothing produces.
 var blockNames = map[ast.NodeKind]blockKind{
 	ast.KindParagraph:                "paragraph",
 	ast.KindHeading:                  "heading",
@@ -85,7 +85,7 @@ func wrapped(at Path, text Source) []goyze.Diagnostic {
 		return nil
 	}
 	var found []goyze.Diagnostic
-	for _, block := range blocks(document) {
+	for _, block := range blocks(document, nil) {
 		found = append(found, blockFinding(at, block, doc)...)
 	}
 	return found
@@ -98,7 +98,7 @@ func wrapped(at Path, text Source) []goyze.Diagnostic {
 // twenty lines is one mistake, not nineteen. It is positioned at the FIRST
 // invisible break, which is where an editor lands to make that edit.
 func blockFinding(at Path, node ast.Node, doc scanned) []goyze.Diagnostic {
-	breaks := doc.invisible(softBreaks(node))
+	breaks := doc.invisible(node, softBreaks(node, nil))
 	if len(breaks) == 0 {
 		return nil
 	}
@@ -108,22 +108,63 @@ func blockFinding(at Path, node ast.Node, doc scanned) []goyze.Diagnostic {
 
 // invisible is the breaks that really are invisible, which is not quite the set
 // the parser calls soft.
-//
-// goldmark decides a backslash break from the last two characters of the line,
-// so it reads an ODD run of three or more backslashes as escaped text rather
-// than as an escaped backslash followed by a break. CommonMark — and therefore
-// what a reader sees on GitHub or on a Hugo page — resolves the escapes first,
-// and `\\\` at a line end is a literal backslash and then a VISIBLE break.
-// Trusting the parser alone would report the one shape whose whole purpose is
-// to make the break seen. Found by the fuzz target, on `0\\\`.
-func (d scanned) invisible(breaks []byteOffset) []byteOffset {
+func (d scanned) invisible(node ast.Node, breaks []byteOffset) []byteOffset {
 	kept := make([]byteOffset, 0, len(breaks))
 	for _, at := range breaks {
-		if trailingBackslashes(d.lineAt(at))%2 == 0 {
+		if !d.isVisible(node, at) {
 			kept = append(kept, at)
 		}
 	}
 	return kept
+}
+
+// isVisible reports a break a READER sees, which the parse alone does not
+// answer. Two shapes are visible while goldmark calls their newline soft, and
+// each is a break whose whole purpose is to be seen — reporting one tells an
+// author to destroy what they wrote.
+func (d scanned) isVisible(node ast.Node, at byteOffset) bool {
+	text := d.lineAt(at)
+	return trailingBackslashes(text)%2 == 1 || d.opensAlert(node, at, text)
+}
+
+// alertMarkers are the five GitHub alert types. The marker must stand ALONE on
+// the first line of its blockquote, so the newline after it is structural: join
+// it and the alert becomes an ordinary quotation, losing its icon, its colour
+// and its meaning. It is invisible in plain CommonMark and visible everywhere
+// this fleet's markdown is actually rendered.
+//
+// Measured before it was mechanized (2026-08-12): nine markers in seven files
+// fleet-wide, every one of them third-party — a Hugo theme, vendored provider
+// changelogs, spec-kit command templates — and two of them were reported. A
+// false positive that instructs an author to break a correct document is worth
+// ten lines whatever its count, and this construct is common everywhere else.
+var alertMarkers = map[line]bool{
+	"[!NOTE]": true, "[!TIP]": true, "[!IMPORTANT]": true, "[!WARNING]": true, "[!CAUTION]": true,
+}
+
+// opensAlert reports the marker line of a GitHub alert.
+//
+// Three conditions, and the third was a hole an adversarial review found: the
+// block sits in a blockquote (`[!NOTE]` in ordinary prose is a bracketed word,
+// and its newline really is decorative), the marker is the type GitHub defines,
+// and it is on the block's FIRST line. Only the first line of a blockquote
+// opens an alert; a second `> [!NOTE]` below it is literal body text, and
+// exempting that one silenced a genuine wrap.
+func (d scanned) opensAlert(node ast.Node, at byteOffset, text line) bool {
+	parent := node.Parent()
+	// The blockquote's own markers are stripped because the line is read from
+	// the RAW document — the parser's segments have them removed already, but
+	// the raw line is what a position maps back to, and `> [!NOTE]` is the
+	// spelling on disk.
+	quoted := strings.TrimLeft(string(text), " \t>")
+	return parent != nil && parent.Kind() == ast.KindBlockquote && d.opensBlock(node, at) &&
+		alertMarkers[line(strings.ToUpper(strings.TrimSpace(quoted)))]
+}
+
+// opensBlock reports a position lying on the first line of its block.
+func (d scanned) opensBlock(node ast.Node, at byteOffset) bool {
+	lines := node.Lines()
+	return lines.Len() > 0 && d.lines.of(byteOffset(lines.At(0).Start)) == d.lines.of(at)
 }
 
 // lineAt is the text of the line holding an offset, without its ending.
@@ -160,47 +201,66 @@ func blockName(node ast.Node) blockKind {
 	return "block"
 }
 
-// blocks is every block node beneath a node, in source order.
+// blocks is every block node beneath a node, in source order, appended to what
+// it was given.
 //
-// The descent stops at inline nodes because a block's inline children belong to
-// that block alone; collecting them here would attribute a paragraph's breaks to
-// the blockquote around it as well, and report one wrap twice.
-func blocks(root ast.Node) []ast.Node {
-	var found []ast.Node
+// The accumulator is threaded through the recursion rather than each level
+// returning its own slice, because `append(append(found, child), blocks(child)…)`
+// re-copies the whole subtree at every level of nesting — O(n·depth), which for
+// a document that nests linearly is quadratic. A 200 KB file of 100,000 nested
+// blockquotes took 52 seconds in that shape, so the size bound did not bound the
+// COST: a checked-in file could hang the gate, and a gate that can be hung is a
+// gate that gets disabled. Found by an adversarial review.
+//
+// The descent skips inline nodes because they hold no blocks; that is a saving,
+// not a correctness guard — what keeps one wrap from being reported twice is
+// [softBreaks] refusing to cross into a nested block.
+func blocks(root ast.Node, into []ast.Node) []ast.Node {
 	for child := root.FirstChild(); child != nil; child = child.NextSibling() {
-		if child.Type() != ast.TypeBlock {
+		if !blockNodes[child.Type()] {
 			continue
 		}
-		found = append(append(found, child), blocks(child)...)
+		into = blocks(child, append(into, child))
 	}
-	return found
+	return into
+}
+
+// blockNodes says which kinds of node hold a document's structure. Every member
+// is named rather than compared against one: a node type absent from the table
+// is a decision nobody wrote down, and this table decides what is walked.
+var blockNodes = map[ast.NodeType]bool{
+	ast.TypeBlock: true,
+	// An inline node holds a block's own text, never another block, and a
+	// document is a root rather than anybody's child.
+	ast.TypeInline:   false,
+	ast.TypeDocument: false,
 }
 
 // softBreaks is where a block's own text ends a line with a newline the
-// renderer discards.
+// renderer discards, appended to what it was given.
 //
-// Only the INLINE subtree is read, for the reason [blocks] descends the way it
-// does: a container block's prose belongs to the leaf blocks inside it, each of
-// which is visited in its own right.
-func softBreaks(node ast.Node) []byteOffset {
-	var found []byteOffset
+// Only the INLINE subtree is read, and that IS a correctness guard: a container
+// block's prose belongs to the leaf blocks inside it, each of which is visited
+// in its own right, so crossing into one would attribute a paragraph's break to
+// the blockquote around it as well and report one wrap twice.
+func softBreaks(node ast.Node, into []byteOffset) []byteOffset {
 	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
-		if child.Type() == ast.TypeBlock {
+		if blockNodes[child.Type()] {
 			continue
 		}
-		found = append(append(found, softBreakOf(child)...), softBreaks(child)...)
+		into = softBreaks(child, append(into, softBreakOf(child)...))
 	}
-	return found
+	return into
 }
 
 // softBreakOf is where this inline node's trailing newline is, when it has one
 // the renderer discards — at most one position, expressed as a slice so a
 // caller composes it without a branch.
 //
-// The parser has already decided the only question that matters. A line ending
-// in a backslash or in two spaces carries a HARD break, which is a break the
-// author asked to be seen, and goldmark marks those separately; what is left is
-// exactly the newline that exists to fit a column.
+// The parser has already decided the question that matters. A line ending in a
+// backslash or in two spaces carries a HARD break, which is a break the author
+// asked to be seen, and goldmark marks those separately; what is left is the
+// newline that exists to fit a column.
 func softBreakOf(node ast.Node) []byteOffset {
 	text, isText := node.(*ast.Text)
 	if !isText || !text.SoftLineBreak() {

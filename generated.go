@@ -18,6 +18,7 @@ package hardwrap
 // still judged as the hand-written document it is.
 
 import (
+	"bytes"
 	"regexp"
 
 	"github.com/yuin/goldmark/ast"
@@ -52,17 +53,66 @@ func isGenerated(document ast.Node, source []byte, lines lineIndex) bool {
 
 // declaresGenerated reports one top-level block that IS a generator's claim.
 //
-// Three things have to hold together, and each one closes a way in: the block
-// is an HTML comment (a paragraph saying the same words is text a reader sees),
-// it begins within the header (a document quoting the convention halfway down
-// is describing it), and it carries the claim.
+// Four things have to hold together, and each one closes a way in: the block is
+// an HTML comment (a paragraph saying the same words is text a reader sees), it
+// begins within the header (a document quoting the convention halfway down is
+// describing it), the words lie INSIDE the comment, and they are the claim.
 func declaresGenerated(node ast.Node, source []byte, lines lineIndex) bool {
 	block, isHTML := node.(*ast.HTMLBlock)
 	if !isHTML || block.Lines().Len() == 0 {
 		return false
 	}
-	if block.HTMLBlockType == ast.HTMLBlockType2 && lines.of(byteOffset(block.Lines().At(0).Start)) <= generatedHeader {
-		return generatedClaim.Match(block.Lines().Value(source))
+	if invisibleBlocks[block.HTMLBlockType] && lines.of(byteOffset(block.Lines().At(0).Start)) <= generatedHeader {
+		return generatedClaim.Match(commentInterior(block.Lines().Value(source)))
 	}
 	return false
 }
+
+// invisibleBlocks says which of CommonMark's seven HTML block types render as
+// nothing at all. One does; the other six are named here rather than left to a
+// comparison — a type absent from the table is a decision nobody wrote down,
+// and this table is what stands between an invisible claim and a visible one
+// anybody can type.
+var invisibleBlocks = map[ast.HTMLBlockType]bool{
+	// 2 is the comment, and it is the whole exemption.
+	ast.HTMLBlockType2: true,
+	// 1 is <script>/<pre>/<style>, 3 is <?…?>, 4 is a <!DECLARATION>, 5 is
+	// <![CDATA[…]]>, 6 is a known block tag and 7 any other tag. Each renders
+	// as markup a reader sees or as content inside it.
+	ast.HTMLBlockType1: false,
+	ast.HTMLBlockType3: false,
+	ast.HTMLBlockType4: false,
+	ast.HTMLBlockType5: false,
+	ast.HTMLBlockType6: false,
+	ast.HTMLBlockType7: false,
+}
+
+// commentInterior is the text BETWEEN a comment's delimiters, which is the only
+// part of an HTML comment block a reader does not see.
+//
+// A CommonMark type-2 block ends at the line holding `-->`, and the rest of
+// that line belongs to the block — so `<!-- --><span title="@generated">` and
+// `<!-- x --> @generated` are both HTML comment blocks carrying the words
+// outside the comment. The first renders an empty span and the second renders
+// the words as visible text; matching the block's whole text accepted both, and
+// each was a one-line, audit-trail-free opt-out from every finding in the file.
+// Found by an adversarial review.
+func commentInterior(text []byte) []byte {
+	opened := bytes.Index(text, []byte(commentOpen))
+	if opened < 0 {
+		return nil
+	}
+	inside := text[opened+len(commentOpen):]
+	if closed := bytes.Index(inside, []byte(commentClose)); closed >= 0 {
+		return inside[:closed]
+	}
+	// An unterminated comment runs to the end of the block, and everything in
+	// it is still inside the comment.
+	return inside
+}
+
+// The delimiters of the one construct markdown renders as nothing at all.
+const (
+	commentOpen  = "<!--"
+	commentClose = "-->"
+)

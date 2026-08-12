@@ -56,10 +56,10 @@ func report(args []string) error {
 		return err
 	}
 	// Report cannot fail: an unreadable or unparseable document becomes a
-	// finding against that file rather than the run's error.
-	out := hardwrap.Report(readFile, found.Files, docs)
-	out.Diagnostics = append(hardwrap.Unreadable(found.Unreadable), out.Diagnostics...)
-	return json.NewEncoder(stdout).Encode(out)
+	// finding against that file rather than the run's error. What the walk could
+	// not read goes THROUGH it rather than beside it, so one limit governs
+	// everything the run emits.
+	return json.NewEncoder(stdout).Encode(hardwrap.Report(readFile, found.Files, found.Unreadable, docs))
 }
 
 // fail prints err to stderr and returns the failure exit code.

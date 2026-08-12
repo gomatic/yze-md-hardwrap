@@ -17,8 +17,8 @@ import (
 // neutralised for the tests that are not about it.
 var lookupEnv = os.Getenv
 
-// configuredDocuments is the set of file kinds this run reads: markdown always,
-// plus whatever the repository asked for.
+// configuredDocuments is the set of file kinds this run reads: markdown, plus
+// whatever the repository asked for.
 func configuredDocuments() hardwrap.Documents {
 	return hardwrap.ConfiguredDocuments(lookupEnv)
 }

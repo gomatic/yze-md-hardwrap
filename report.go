@@ -36,72 +36,86 @@ const unreadableMessage = "cannot be analyzed as a document: %v; the gate cannot
 // the filesystem.
 type FileReader func(path string) ([]byte, error)
 
-// Unreadable is the finding for each path the walk could not read: a directory
-// it could not enter, and a file it could not have read had it tried — a FIFO,
-// a device, a link resolving to nothing. Both are REPORTED rather than skipped,
-// because a path the gate cannot open is where an unchecked one would hide, and
-// the run still yields every other file's findings.
-func Unreadable(paths []string) []goyze.Diagnostic {
-	diags := make([]goyze.Diagnostic, 0, len(paths))
-	for _, path := range paths {
-		diags = append(diags, unreadable(Path(path), nil))
-	}
-	return diags
-}
-
 // Report runs the rule over each document and aggregates the diagnostics into
 // the lean stickler-json report.
-func Report(read FileReader, files []string, docs Documents) goyze.Report {
-	report := goyze.Report{}
-	total := findingCount(0)
-	truncatedAt := Path("")
+//
+// unreadable is what the walk could not read: a directory it could not enter,
+// and a file it could not have read had it tried — a FIFO, a device, a link
+// resolving to nothing. Each is REPORTED rather than skipped, because a path
+// the gate cannot open is where an unchecked one would hide, and it is reported
+// THROUGH this function rather than beside it: prepending those findings after
+// the fact put them outside the run's limit, so a tree of unreadable
+// directories was the one unbounded path left in a bounded report.
+func Report(read FileReader, files, unreadable []string, docs Documents) goyze.Report {
+	// Started EMPTY rather than nil, so a clean run encodes as
+	// `{"diagnostics":[]}` — the same shape as a run with findings, rather than
+	// a null a consumer has to special-case.
+	run := collecting{found: []goyze.Diagnostic{}}
+	for _, path := range unreadable {
+		run = run.add(Path(path), []goyze.Diagnostic{unreadableFinding(Path(path), nil)}, 1)
+	}
 	for _, file := range files {
 		found, held := fileFindings(read, Path(file), docs)
-		// The TRUE count, not the reported one: a document past its own limit
-		// hands back a truncated slice, so summing slices would count this
-		// run's truncation instead of the documents' findings.
-		total += held
-		if truncatedAt != "" {
-			// Past the limit the run keeps COUNTING but stops collecting, so
-			// the total it reports is the true one.
-			continue
-		}
-		report, truncatedAt = collect(report, found, Path(file))
+		run = run.add(Path(file), found, held)
 	}
-	if truncatedAt != "" {
-		report.Diagnostics = append(report.Diagnostics, runTruncation(truncatedAt, total))
-	}
-	return report
+	return run.done()
 }
 
-// collect adds one document's findings to the report, reporting the file the
-// run stopped collecting at when they do not all fit.
-func collect(report goyze.Report, found []goyze.Diagnostic, file Path) (goyze.Report, Path) {
-	room := reportLimit - findingCount(len(report.Diagnostics))
-	if findingCount(len(found)) > room {
-		report.Diagnostics = append(report.Diagnostics, found[:room]...)
-		return report, file
+// collecting is one run in progress: what it has collected, how much it has
+// FOUND, and the file it stopped collecting at.
+//
+// The two numbers are separate because they answer different questions. A
+// document past its own limit hands back a truncated slice, so summing the
+// slices would count this run's truncation instead of the documents' findings —
+// and past the run's limit it keeps counting while it stops collecting, so the
+// total it finally reports is the true one.
+type collecting struct {
+	truncatedAt Path
+	found       []goyze.Diagnostic
+	total       findingCount
+}
+
+// add takes one path's findings into the run.
+func (c collecting) add(file Path, found []goyze.Diagnostic, held findingCount) collecting {
+	c.total += held
+	if c.truncatedAt != "" {
+		return c
 	}
-	report.Diagnostics = append(report.Diagnostics, found...)
-	return report, ""
+	room := reportLimit - findingCount(len(c.found))
+	if findingCount(len(found)) > room {
+		c.found = append(c.found, found[:room]...)
+		c.truncatedAt = file
+		return c
+	}
+	c.found = append(c.found, found...)
+	return c
+}
+
+// done is the finished report, with the notice that stands for anything the
+// limit dropped.
+func (c collecting) done() goyze.Report {
+	if c.truncatedAt != "" {
+		c.found = append(c.found, runTruncation(c.truncatedAt, c.total))
+	}
+	return goyze.Report{Diagnostics: c.found}
 }
 
 // fileFindings is one file's diagnostics, whether it could be read or not.
 //
-// A file the gate cannot open becomes ONE finding against that file and the run
-// continues, exactly as an unparseable one does — a single blob mis-claimed by
-// discovery can never take every other file's findings down with it.
+// A file the gate fails to open becomes ONE finding against that file and the
+// run continues, as an unparseable one does, so a single blob mis-claimed by
+// discovery leaves every other file's findings intact.
 func fileFindings(read FileReader, file Path, docs Documents) ([]goyze.Diagnostic, findingCount) {
 	data, err := read(string(file))
 	if err != nil {
-		return []goyze.Diagnostic{unreadable(file, err)}, 1
+		return []goyze.Diagnostic{unreadableFinding(file, err)}, 1
 	}
 	return documentDiagnostics(file, Source(data), docs)
 }
 
-// documentDiagnostics is one document's findings, with a document that cannot be
-// read as text reported as a finding of its own rather than raised as the whole
-// run's error.
+// documentDiagnostics is one document's findings, with a document too large,
+// too deeply nested or not text reported as a finding of its own rather than
+// raised as the whole run's error.
 func documentDiagnostics(file Path, source Source, docs Documents) ([]goyze.Diagnostic, findingCount) {
 	diags, held, err := countedDiagnostics(file, source, docs)
 	if err != nil {
@@ -120,7 +134,15 @@ func runTruncation(at Path, found findingCount) goyze.Diagnostic {
 	return diagnostic(at, 1, finding(fmt.Sprintf(runTruncationMessage, found, reportLimit, at)))
 }
 
-// unreadable is the finding for a document the analyzer could not open at all.
-func unreadable(file Path, cause error) goyze.Diagnostic {
-	return diagnostic(file, 1, finding(fmt.Sprintf(unreadableMessage, ErrReadFile.With(cause, "path", string(file)))))
+// unreadableFinding is the finding for a path the analyzer could not open at all.
+func unreadableFinding(file Path, cause error) goyze.Diagnostic {
+	return diagnostic(file, 1, finding(fmt.Sprintf(unreadableMessage, readFailure(file, cause))))
+}
+
+// readFailure is the error a path the gate could not open produces. It is a
+// value rather than a formatted string so the sentinel it carries is matchable
+// with errors.Is — a sentinel that only ever reaches a message could be swapped
+// for any other with the suite green.
+func readFailure(file Path, cause error) error {
+	return ErrReadFile.With(cause, "path", string(file))
 }

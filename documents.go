@@ -18,10 +18,10 @@ import (
 // (".md") or a whole file name ("NOTES").
 //
 // Both live in ONE set and are matched against both spellings of a path,
-// because the distinction is already in the text: a name cannot be confused
-// with an extension unless it begins with a dot, and a file that begins with a
-// dot has the same string for both. Splitting them into two configured lists
-// would be two vocabularies for one question.
+// because the distinction is already in the text: a name is confusable with an
+// extension only when it begins with a dot, and a file that begins with a dot
+// has the same string for both. Splitting them into two configured lists would
+// be two vocabularies for one question.
 type selector string
 
 // baseName is a file's final path element, lower-cased.
@@ -34,10 +34,9 @@ type baseName string
 // says nothing about having skipped it.
 type Documents map[selector]bool
 
-// markdownSelectors are the extensions that are markdown by name and are
-// therefore always read. They are the whole default: an analyzer that read
-// `.txt` or every extensionless file by default would parse Makefiles, licences
-// and binaries as prose.
+// The extensions that are markdown by name, and so the whole default. An
+// analyzer reading `.txt` or every extensionless file out of the box would parse
+// Makefiles, licences and binaries as prose.
 const (
 	markdownExt     selector = ".md"
 	markdownLongExt selector = ".markdown"
@@ -83,10 +82,13 @@ func DefaultDocuments() Documents {
 func ConfiguredDocuments(lookup func(string) string) Documents {
 	docs := DefaultDocuments()
 	configured := lookup(documentsVariable)
+	// No emptiness guard: a field from FieldsFunc is by construction a run of
+	// non-separator characters, and whitespace IS a separator here, so a field
+	// can be neither empty nor surrounded by space. A guard against it would be
+	// a condition no input can make false — a check that looks like one and
+	// tests nothing.
 	for _, entry := range strings.FieldsFunc(configured, func(r rune) bool { return isEntrySeparator(separatorRune(r)) }) {
-		if name := selector(strings.ToLower(strings.TrimSpace(entry))); name != "" {
-			docs[name] = true
-		}
+		docs[selector(strings.ToLower(entry))] = true
 	}
 	return docs
 }

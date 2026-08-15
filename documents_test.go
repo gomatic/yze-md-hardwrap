@@ -137,3 +137,21 @@ func TestASetNamingNothingReadsMarkdown(t *testing.T) {
 		assert.False(t, docs.Reads("LICENSE.md"), "a licence is still not ours to reflow")
 	}
 }
+
+// TestOnlyALicenceIsExemptByItsName pins the licence table in the direction
+// nothing in this repository pinned it: ADDING a stem.
+//
+// The removal direction was already covered — drop `licence` and the case above
+// fails. The other direction was invisible: adding `"changelog": true` left
+// `make check` at exit 0 and total coverage 100.0%, and a hard-wrapped
+// CHANGELOG.md went silent. The exemption exists because a licence is a
+// quotation of somebody else's words, and every other document named here is
+// the repository's own to reflow. Found by an adversarial review.
+func TestOnlyALicenceIsExemptByItsName(t *testing.T) {
+	t.Parallel()
+
+	for _, ours := range []string{"CHANGELOG.md", "README.md", "CONTRIBUTING.md", "SECURITY.md", "changelog.md"} {
+		assert.Len(t, analyze(t, ours, "a paragraph that is\nwrapped\n"), 1,
+			"%s is this repository's own prose", ours)
+	}
+}

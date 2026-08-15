@@ -99,8 +99,32 @@ func (d scanned) opensAlert(node ast.Node, at byteOffset, text line) bool {
 	// spelling on disk.
 	quoted := strings.TrimLeft(string(text), " \t>")
 	return parent.Kind() == ast.KindBlockquote && d.opensBlock(node, at) &&
-		alertMarkers[asciiUpper(line(strings.TrimSpace(quoted)))]
+		alertMarkers[asciiUpper(trimmed(line(quoted)))]
 }
+
+// trimmed removes the whitespace the FORMAT defines from both ends of a line,
+// which is ASCII whitespace and nothing else.
+//
+// It is not [strings.TrimSpace], and the difference is the other half of the
+// forgery [asciiUpper] closes. TrimSpace removes every rune unicode.IsSpace
+// accepts, so `> [!NOTE]` followed by U+00A0 — or preceded by one, or wrapped
+// in U+3000, U+0085 or U+1680 — was DELETED down to the bare marker and matched
+// the table. None of those is CommonMark whitespace: the blockquote's paragraph
+// text is literally a non-breaking space against a bracketed word, GitHub's
+// alert syntax does not match it, and the quotation renders with no icon and no
+// colour. Five spellings, each acquiring the marker and none of the property,
+// and hardening the fold alone had left every one of them open while the
+// package doc claimed the opposite. Found by an adversarial review of the
+// commit that closed the fold.
+func trimmed(text line) line {
+	return line(strings.Trim(string(text), asciiWhitespace))
+}
+
+// asciiWhitespace is the whitespace CommonMark defines, in full: space, tab,
+// and the four line endings. The set is written out as the FORMAT states it
+// rather than narrowed to the two a single line can hold, so a reader comparing
+// it against the spec sees one list and not a subset somebody trimmed.
+const asciiWhitespace = " \t\n\v\f\r"
 
 // asciiUpper upper-cases a line's ASCII letters and leaves every other rune
 // exactly as written.
@@ -113,10 +137,15 @@ func (d scanned) opensAlert(node ast.Node, at byteOffset, text line) bool {
 // word, and this rule fell silent on it. The same forgery reached `[!ıMPORTANT]`,
 // `[!WARNıNG]` and `[!CAUTıON]`; an exhaustive scan of every letter below
 // U+30000 finds the dotless i is the only one, which is exactly why nothing but
-// a case would ever have caught it. The marker is ASCII, so the fold is ASCII,
-// and every rune outside it stays foreign to the table by construction. Found by
-// an adversarial review; the same simple-fold class it found in yze-md-markup
-// and yze-md-docfiles.
+// a case would ever have caught it. Found by an adversarial review; the same
+// simple-fold class it found in yze-md-markup and yze-md-docfiles.
+//
+// The marker is ASCII, so the fold is ASCII — but the fold is only half of what
+// reaches the table, and an earlier version of this comment claimed otherwise:
+// "every rune outside it stays foreign to the table by construction" was false
+// while [strings.TrimSpace] still DELETED five non-ASCII space runes before the
+// lookup. See [trimmed], which is the other half. A claim about what cannot
+// reach a table has to account for everything on the path to it.
 func asciiUpper(text line) line {
 	return line(strings.Map(func(letter rune) rune {
 		if 'a' <= letter && letter <= 'z' {

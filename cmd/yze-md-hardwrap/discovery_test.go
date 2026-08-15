@@ -8,6 +8,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	goyze "github.com/gomatic/go-yze"
@@ -120,20 +121,20 @@ func TestReportableKeepsOnlyADocumentOrATree(t *testing.T) {
 	dir := t.TempDir()
 	tree := filepath.Join(dir, "locked")
 	require.NoError(t, os.Mkdir(tree, 0o750))
+	document := filepath.Join(dir, "notes.md")
+	require.NoError(t, syscall.Mkfifo(document, 0o600))
+	socket := filepath.Join(dir, "pipe.sock")
+	require.NoError(t, syscall.Mkfifo(socket, 0o600))
 	link := filepath.Join(dir, "dangling.go")
 	require.NoError(t, os.Symlink(filepath.Join(dir, "nothing"), link))
+	source := filepath.Join(dir, "main.go")
+	require.NoError(t, os.WriteFile(source, []byte("package main\n"), 0o600))
+	licence := filepath.Join(dir, "LICENSE.md")
+	require.NoError(t, os.WriteFile(licence, []byte("a licence\n"), 0o600))
 
-	kept := reportable([]string{
-		filepath.Join(dir, "notes.md"),
-		filepath.Join(dir, "pipe.sock"),
-		filepath.Join(dir, "main.go"),
-		filepath.Join(dir, "agent", "s.kj0FQdwS7s.agent.8YCOgTjLis"),
-		filepath.Join(dir, "LICENSE.md"),
-		link,
-		tree,
-	}, hardwrap.DefaultDocuments())
+	kept := reportable([]string{document, socket, source, link, licence, tree}, hardwrap.DefaultDocuments())
 
-	assert.Equal(t, []string{filepath.Join(dir, "notes.md"), tree}, kept,
+	assert.Equal(t, []string{document, tree}, kept,
 		"a document the gate could not open and a tree nobody entered; nothing else is this rule's business")
 }
 
@@ -150,10 +151,10 @@ func TestAnUnreadableDocumentFollowsTheRunsConfiguration(t *testing.T) {
 	assert.Equal(t, []string{"notes.txt"}, reportable([]string{"notes.txt", "main.go"}, docs))
 }
 
-// TestIsTreeAsksTheFilesystemRatherThanTheName pins that the kind is asked of the FILESYSTEM
+// TestMayHoldDocumentsAsksTheFilesystemRatherThanTheName pins that the kind is asked of the FILESYSTEM
 // rather than read off the name: a link to a directory is a tree the walk
 // declined to enter, and a link resolving to nothing is not a tree at all.
-func TestIsTreeAsksTheFilesystemRatherThanTheName(t *testing.T) {
+func TestMayHoldDocumentsAsksTheFilesystemRatherThanTheName(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target")
 	require.NoError(t, os.Mkdir(target, 0o750))
@@ -162,4 +163,27 @@ func TestIsTreeAsksTheFilesystemRatherThanTheName(t *testing.T) {
 
 	assert.Equal(t, []string{toTree}, reportable([]string{toTree}, hardwrap.DefaultDocuments()),
 		"a link to a tree is a tree, whatever it is named")
+}
+
+// TestASubtreeNothingCanStatIsStillReported pins the arm whose absence dropped a
+// whole subtree, and the documents inside it, in silence.
+//
+// A directory readable WITHOUT the execute bit lists its children and lets
+// nothing stat them, so the walk hands back `a/b` and both lstat and stat fail
+// with EACCES. Deciding "not a directory, so not this rule's business" from that
+// failure meant a tree nobody entered was neither analyzed nor mentioned — the
+// one outcome a gate must never produce, and it was introduced by the arm added
+// to stop a socket being reported. Only a definite NO from the filesystem drops
+// a path. Found by an adversarial review.
+func TestASubtreeNothingCanStatIsStillReported(t *testing.T) {
+	dir := t.TempDir()
+	outer := filepath.Join(dir, "a")
+	require.NoError(t, os.MkdirAll(filepath.Join(outer, "b"), 0o750))
+	require.NoError(t, os.Chmod(outer, 0o400))
+	t.Cleanup(func() { _ = os.Chmod(outer, 0o750) })
+
+	kept := reportable([]string{filepath.Join(outer, "b")}, hardwrap.DefaultDocuments())
+
+	assert.Equal(t, []string{filepath.Join(outer, "b")}, kept,
+		"a path the filesystem will not answer for is not a path this rule may pass over")
 }

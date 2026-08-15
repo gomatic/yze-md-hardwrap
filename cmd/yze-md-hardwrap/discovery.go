@@ -8,6 +8,9 @@ package main
 // differently.
 
 import (
+	"errors"
+	"io/fs"
+
 	goyze "github.com/gomatic/go-yze"
 
 	hardwrap "github.com/gomatic/yze-md-hardwrap"
@@ -49,23 +52,48 @@ func claimed(docs hardwrap.Documents) goyze.Claim {
 // where an unchecked document hides, and no document set claims a directory by
 // name. The two are told apart by ASKING THE FILESYSTEM rather than by reading
 // the path: a name is not evidence of a kind, and `locked` and `pipe.sock` are
-// spelled alike enough that any rule about their spelling would be a guess. Stat
-// FOLLOWS a link, so a link to a directory is a tree here exactly as the walk
-// treated it, while a link resolving to nothing is not.
+// spelled alike enough that any rule about their spelling would be a guess.
 func reportable(unreadable []string, docs hardwrap.Documents) []string {
 	kept := make([]string, 0, len(unreadable))
 	for _, path := range unreadable {
-		if docs.Reads(hardwrap.Path(path)) || isTree(hardwrap.Path(path)) {
+		if docs.Reads(hardwrap.Path(path)) || mayHoldDocuments(hardwrap.Path(path)) {
 			kept = append(kept, path)
 		}
 	}
 	return kept
 }
 
-// isTree reports a path the filesystem says is a directory. A path it cannot
-// answer for is not one: the walk already failed on it, and guessing a kind for
-// a path nothing can stat is how a socket became a prose finding.
-func isTree(at hardwrap.Path) bool {
+// mayHoldDocuments reports a path this rule must speak about whatever it is
+// named: a directory, and a path the filesystem will not answer for AT ALL.
+//
+// The second half is the one that matters, and leaving it out was a regression
+// an adversarial review caught. A tree is normally unenterable because its own
+// mode denies it, and stat then answers fine — but a directory read WITHOUT the
+// execute bit lists its children and lets nothing stat them, so the walk hands
+// back `a/b` and both stat and lstat fail with EACCES. Deciding "not a
+// directory, so not our business" from a failed stat therefore dropped an
+// entire subtree, and the hard-wrapped documents inside it went unanalyzed and
+// unmentioned — the one outcome a gate must never produce, reached through the
+// arm added to stop a socket being reported.
+//
+// So the question is not "is it a directory" but "can the filesystem rule it
+// out", and only a DEFINITE no drops the path. The two failures are not the
+// same answer: "there is nothing here" settles the question, and "I am not
+// allowed to look" settles nothing, so the first drops and the second keeps.
+// Collapsing them was the regression, and collapsing them the other way — keep
+// on any error — would report every path that has since been deleted.
+//
+// lstat is asked first because it answers for the LINK, and stat second because
+// it answers for what the link leads to: a link resolving to nothing is
+// definitely not a tree, while a link to a directory is one. The walk does not
+// appear to hand back a link to a directory today — measured on both binaries,
+// a symlinked directory inside a walked tree reaches no list at all — so that
+// arm is written for what stat means rather than for a path observed reaching
+// it.
+func mayHoldDocuments(at hardwrap.Path) bool {
+	if _, err := files.Lstat(string(at)); err != nil {
+		return !errors.Is(err, fs.ErrNotExist)
+	}
 	info, err := files.Stat(string(at))
 	return err == nil && info.IsDir()
 }

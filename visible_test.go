@@ -56,6 +56,37 @@ func TestAsciiUpperFoldsAsciiAloneSoAMarkerCannotBeForged(t *testing.T) {
 		"and the ASCII fold still admits the marker written in any ASCII case")
 }
 
+// TestTrimmedRemovesTheFormatsWhitespaceAndNoOtherRune pins the OTHER half of
+// the path to the marker table, which hardening the fold alone left open.
+//
+// strings.TrimSpace removes every rune unicode.IsSpace accepts, so a marker
+// padded with a non-breaking space, an ideographic space, a next line or an
+// ogham space mark was deleted down to the bare marker and matched — five more
+// spellings acquiring the marker and none of the property, since none of those
+// is CommonMark whitespace and GitHub renders no alert for any of them. The
+// commit that closed the case-fold half asserted in its own doc comment that
+// every rune outside ASCII stayed foreign to the table; it did not, and only a
+// case says so. Found by an adversarial review of that commit.
+func TestTrimmedRemovesTheFormatsWhitespaceAndNoOtherRune(t *testing.T) {
+	t.Parallel()
+
+	for name, padded := range map[string]string{
+		"a non-breaking space after":  "[!NOTE]\u00a0",
+		"a non-breaking space before": "\u00a0[!NOTE]",
+		"an ideographic space around": "\u3000[!NOTE]\u3000",
+		"a next line after":           "[!NOTE]\u0085",
+		"an ogham space mark after":   "[!NOTE]\u1680",
+	} {
+		assert.Len(t, analyze(t, "notes.md", "> "+padded+"\n> wrapped onto this line\n"), 1,
+			"%s: the marker no longer stands alone, and GitHub renders no alert", name)
+	}
+
+	assert.Empty(t, analyze(t, "notes.md", "> [!NOTE]   \n> wrapped onto this line\n"),
+		"and the format's own whitespace is still trimmed, so a real marker keeps its exemption")
+	assert.Empty(t, analyze(t, "notes.md", ">\t[!NOTE]\t\n> wrapped onto this line\n"),
+		"a tab included")
+}
+
 // TestReportsReadsNothingButTheBreakItIsDeciding varies the one input
 // dimension this repository's corpus held constant: the TEXT of the wrapped
 // line.

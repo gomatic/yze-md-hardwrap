@@ -207,3 +207,24 @@ func TestMainExits(t *testing.T) {
 
 	assert.Equal(t, 1, code)
 }
+
+// TestARunSaysNothingAboutAPathItWouldNeverHaveRead is the end-to-end half of
+// the bound `reportable` applies: the walk hands back entries of any name, and
+// a run must not turn them into error-severity findings under a rule about
+// where a paragraph's newline goes. Pinning the function alone left the bound
+// unwired — reverting the call site to the raw list passed every test that
+// named it.
+func TestARunSaysNothingAboutAPathItWouldNeverHaveRead(t *testing.T) {
+	dir := t.TempDir()
+	writeDoc(t, dir, "README.md", wrapped)
+	require.NoError(t, syscall.Mkfifo(filepath.Join(dir, "pipe.sock"), 0o600))
+	require.NoError(t, os.Symlink(filepath.Join(dir, "nothing"), filepath.Join(dir, "dangling.go")))
+	buf := swapStdout(t)
+
+	require.Equal(t, 0, run([]string{dir}))
+
+	out := buf.String()
+	assert.NotContains(t, out, "pipe.sock", "a socket is not this rule's business")
+	assert.NotContains(t, out, "dangling.go", "nor is a link resolving to nothing")
+	assert.Contains(t, out, "source lines", "and the document beside them keeps its finding")
+}

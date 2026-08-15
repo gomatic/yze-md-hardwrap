@@ -27,21 +27,52 @@
 // line in that repository's own configuration rather than a per-block escape.
 // See [Settings].
 //
-// The one construct exempt in every run is a GitHub alert marker (`> [!NOTE]`
+// # The exemptions, both of them
+//
+// The one CONSTRUCT exempt in every run is a GitHub alert marker (`> [!NOTE]`
 // and its four siblings), which is not a spelling of a line ending at all: the
 // marker must stand alone on its blockquote's first line for the alert to
-// exist, so joining it deletes the construct rather than reflowing it.
+// exist, so joining it deletes the construct rather than reflowing it. The five
+// types GitHub defines are the whole list, matched by an ASCII fold — see
+// [asciiUpper] for the forgery a Unicode one admitted.
+//
+// The one DOCUMENT exempt in every run is a licence: any file whose stem is
+// `license` or `licence`, whatever its extension and however the run is
+// configured. A licence's text is a quotation of somebody else's words, and
+// reflowing it changes a document whose whole value is being unchanged. This
+// clause was mechanized before it was written down, which is the enumeration
+// running in one direction only — the code exempted a document the rule never
+// promised to skip, so no case, no forgery probe and no reviewer was ever sent
+// to look at it. Found by an adversarial review.
 //
 // # What this rule does not see
 //
-// Three limits are known, measured and accepted rather than guessed at:
+// Four limits are known, measured and accepted rather than guessed at:
 //
 //   - Prose inside an HTML BLOCK is not judged. Its lines are markup a renderer
 //     passes through verbatim, and the standard governs a paragraph, a list
 //     item, a blockquote, a table row and a heading — an HTML block is none of
-//     them. Measured 2026-08-12: 1,775 multi-line HTML blocks fleet-wide, the
-//     first-party ones being Hugo layout blocks where a tag per line is the
-//     convention. Reporting them would tell an author to collapse markup.
+//     them. REMEASURED 2026-08-15, over the trees this analyzer actually walks:
+//     60 multi-line HTML blocks fleet-wide, in 20 files, of which 14 hold two or
+//     more plain-text lines and six of those are first-party — GitHub issue and
+//     pull-request templates, one Hugo content page and one imported overview.
+//     The figure this comment carried for three days was 1,775, and it
+//     reproduces only with the command's prune list REMOVED (1,771), which
+//     counts the `node_modules` and vendored build trees no run ever reads. A
+//     measurement taken over a corpus the analyzer does not walk is not evidence
+//     about this analyzer, and this one overstated its own population thirtyfold
+//     in the direction that made the exemption look cheap. What the exemption
+//     costs at the true population is that any hard-wrapped passage goes silent
+//     when it is wrapped in `<div>` and `</div>`, which is an off switch
+//     reachable per block.
+//   - A wrapped TABLE ROW is not judged, and cannot be. Inside a GFM table every
+//     source line is a row of its own, so a row broken across lines is two rows
+//     and joining them would MERGE them rather than reflow one; a cell's line
+//     segments come from its own row line and never number more than one. A
+//     would-be row broken across lines with no delimiter row above it is not a
+//     table to the parser and is reported as the paragraph it is. The rule names
+//     a table row because the standard does; the construct that would violate it
+//     does not exist in the format.
 //   - A CR-only line ending (a pre-OSX Macintosh document) is not a line ending
 //     to the parser this rule uses, so such a document is one long line and
 //     reports nothing. CommonMark itself counts a lone carriage return as a
@@ -179,13 +210,20 @@ func Diagnostics(at Path, source Source, settings Settings) ([]goyze.Diagnostic,
 // document holds, which is not the number reported: the per-document limit
 // truncates the slice, so a run summing the slices would count its own
 // truncation rather than the documents.
+// The scope gate runs FIRST, and the order is the contract rather than an
+// arrangement of two independent checks. Asking whether the bytes are readable
+// prose before asking whether this run reads the path at all answers a question
+// about a file that is not this rule's business, and answers it with an ERROR —
+// so `main.go` came back ErrTooLarge, ErrNotText or ErrTooDeep depending on its
+// contents, which is a tool failure raised about a file the rule had already
+// decided to say nothing about. Found by an adversarial review.
 func countedDiagnostics(at Path, source Source, settings Settings) ([]goyze.Diagnostic, findingCount, error) {
+	if !settings.Documents.Reads(at) {
+		return nil, 0, nil
+	}
 	text, err := readable(at, source)
 	if err != nil {
 		return nil, 0, err
-	}
-	if !settings.Documents.Reads(at) {
-		return nil, 0, nil
 	}
 	found, total := wrapped(at, text, settings.Breaks)
 	if total > findingLimit {

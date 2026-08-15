@@ -60,10 +60,9 @@ type blockKind string
 // definition description hold their prose in — by the kind of its parent, which
 // is the construct an author would recognise.
 var blockNames = map[ast.NodeKind]blockKind{
-	ast.KindParagraph:    "paragraph",
-	ast.KindHeading:      "heading",
-	ast.KindListItem:     "list item",
-	extast.KindTableCell: "table cell",
+	ast.KindParagraph: "paragraph",
+	ast.KindHeading:   "heading",
+	ast.KindListItem:  "list item",
 }
 
 // blockName is what this block is called in a finding.
@@ -230,17 +229,31 @@ func (d scanned) lineBreaks(node ast.Node) []lineBreak {
 // An HTML BLOCK is the one exclusion worth naming twice, because it is the one
 // that holds real prose. Its lines are markup a renderer passes through
 // verbatim, and the standard governs a paragraph, a list item, a blockquote, a
-// table row and a heading — an HTML block is none of those. Measured before it
-// was left out (2026-08-12): 1,775 multi-line HTML blocks fleet-wide, the
-// first-party ones being Hugo layout blocks on `www.*` content pages, where a
-// tag per line is the whole convention. Reporting them would tell an author to
-// collapse markup, which is a rule nobody has written. Prose hard-wrapped inside
-// one therefore goes unjudged; see the package doc.
+// table row and a heading — an HTML block is none of those. Reporting them would
+// tell an author to collapse markup, which is a rule nobody has written. Prose
+// hard-wrapped inside one therefore goes unjudged; see the package doc, which
+// carries the REMEASURED population and what the exemption costs at it. The
+// figure that stood here — 1,775 multi-line blocks — was taken with the
+// command's prune list removed, so it counted `node_modules` and vendored build
+// trees no run ever reads; over the trees this analyzer walks the population is
+// 60. Found by an adversarial review, and the lesson is the general one: a
+// number that carries an exemption is measured over the corpus the analyzer
+// sees, or it is a measurement of something else.
+// A TABLE CELL is excluded, and it was in this table as `true` until a review
+// probed it: a GFM cell's line segments come from its own row LINE, so a cell
+// never holds more than one and [lineBreaks] takes one fewer than that. The arm
+// could produce no finding at any input, which makes it dead defensive code
+// rather than an untested branch — and `this table cell spans N source lines`
+// was a message no document could reach. The reason it can never fire is the
+// format: inside a GFM table every source line is a row of its own, so a row
+// broken across lines is two rows and joining them would MERGE them rather than
+// reflow one. A would-be row broken across lines with no delimiter row above it
+// is not a table at all, and is reported as the paragraph the parser says it is.
 var proseBlocks = map[ast.NodeKind]bool{
 	ast.KindParagraph:       true,
 	ast.KindTextBlock:       true,
 	ast.KindHeading:         true,
-	extast.KindTableCell:    true,
+	extast.KindTableCell:    false,
 	ast.KindDocument:        false,
 	ast.KindBlockquote:      false,
 	ast.KindList:            false,

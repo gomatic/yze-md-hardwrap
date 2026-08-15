@@ -99,8 +99,35 @@ func (d scanned) opensAlert(node ast.Node, at byteOffset, text line) bool {
 	// spelling on disk.
 	quoted := strings.TrimLeft(string(text), " \t>")
 	return parent.Kind() == ast.KindBlockquote && d.opensBlock(node, at) &&
-		alertMarkers[line(strings.ToUpper(strings.TrimSpace(quoted)))]
+		alertMarkers[asciiUpper(line(strings.TrimSpace(quoted)))]
 }
+
+// asciiUpper upper-cases a line's ASCII letters and leaves every other rune
+// exactly as written.
+//
+// It is not [strings.ToUpper], and the difference is the exemption's whole
+// integrity. ToUpper is Unicode simple case mapping, which folds runes GitHub's
+// alert syntax does not accept: U+0131 LATIN SMALL LETTER DOTLESS I upper-cases
+// to `I`, so `> [!TıP]` acquired the marker and none of the property — GitHub
+// renders that blockquote as a plain quotation carrying the literal bracketed
+// word, and this rule fell silent on it. The same forgery reached `[!ıMPORTANT]`,
+// `[!WARNıNG]` and `[!CAUTıON]`; an exhaustive scan of every letter below
+// U+30000 finds the dotless i is the only one, which is exactly why nothing but
+// a case would ever have caught it. The marker is ASCII, so the fold is ASCII,
+// and every rune outside it stays foreign to the table by construction. Found by
+// an adversarial review; the same simple-fold class it found in yze-md-markup
+// and yze-md-docfiles.
+func asciiUpper(text line) line {
+	return line(strings.Map(func(letter rune) rune {
+		if 'a' <= letter && letter <= 'z' {
+			return letter - lowerToUpper
+		}
+		return letter
+	}, string(text)))
+}
+
+// lowerToUpper is the distance between an ASCII letter's two cases.
+const lowerToUpper = 'a' - 'A'
 
 // opensBlock reports a position lying on the first line of its block.
 func (d scanned) opensBlock(node ast.Node, at byteOffset) bool {

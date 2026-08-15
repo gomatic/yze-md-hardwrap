@@ -242,3 +242,31 @@ func TestOnlyTheFirstBLOCKOfAQuotationOpensAnAlert(t *testing.T) {
 	assert.Empty(t, analyze(t, "notes.md", "> [!NOTE]\n> the whole warning on one line\n"),
 		"and a real alert is still structural")
 }
+
+// TestProseBlocksExcludesATableCellBecauseARowCannotSpanLines pins the one
+// construct the standard names that this format cannot produce.
+//
+// Inside a GFM table every source line is a row of its own, so a row broken
+// across lines is TWO rows and joining them would merge them rather than reflow
+// one; a cell's line segments come from its own row line and never number more
+// than one, so the table-cell arm of the walk could produce no finding at any
+// input. It was dead defensive code carrying a message — "this table cell spans
+// N source lines" — that no document could reach. The near-miss is the sibling
+// below: the same lines with no delimiter row above them are not a table at
+// all, and are reported as the paragraph the parser says they are. Found by an
+// adversarial review.
+func TestProseBlocksExcludesATableCellBecauseARowCannotSpanLines(t *testing.T) {
+	t.Parallel()
+
+	for name, table := range map[string]string{
+		"a cell broken across lines":   "| a | b |\n| --- | --- |\n| c\nd | e |\n",
+		"a row broken across lines":    "| aaa | bbb |\n| --- | --- |\n| ccc |\n ddd |\n",
+		"a header broken across lines": "| aaa\nbbb | ccc |\n| --- | --- |\n| d | e |\n",
+	} {
+		assert.Empty(t, analyze(t, "notes.md", table),
+			"%s: each source line is a row of its own, so there is no wrap to join", name)
+	}
+
+	assert.Len(t, analyze(t, "notes.md", "| c\nd | e |\n"), 1,
+		"and the same lines with no delimiter row are not a table, so they are the paragraph they look like")
+}

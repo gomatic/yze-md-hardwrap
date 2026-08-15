@@ -238,3 +238,47 @@ func TestAMarkerAtTheEndOfALineIsStillOneMarker(t *testing.T) {
 		assert.Empty(t, diags, "%q occupies one line per block", document)
 	}
 }
+
+// TestAPathTheRunDoesNotReadIsRefusedBeforeItsBytesAre pins the ORDER of the
+// two gates, which is a contract and not an arrangement of independent checks.
+//
+// [hardwrap.Diagnostics] promises that a path the run does not read yields no
+// findings AND NO ERROR — "it is not this rule's business, which is a different
+// answer from it is clean". As shipped it asked the content questions first, so
+// `main.go` came back ErrTooLarge at 8 MiB + 1 bytes, ErrNotText for two
+// non-UTF-8 bytes and ErrTooDeep for deeply nested containers: a tool failure
+// raised about a file the rule had already decided to say nothing about, and
+// one an author cannot act on because the file is not a document. The test
+// named for the contract only ever passed inputs that clear every guard, so it
+// could not see the order in either direction. Found by an adversarial review.
+func TestAPathTheRunDoesNotReadIsRefusedBeforeItsBytesAre(t *testing.T) {
+	t.Parallel()
+
+	for name, source := range map[string]string{
+		"past the size bound":   strings.Repeat("a", int(hardwrap.SizeLimit)+1),
+		"not text at all":       "\xff\xfe",
+		"nested past the bound": strings.Repeat("> ", 200) + "x",
+	} {
+		diags, err := hardwrap.Diagnostics("main.go", hardwrap.Source(source), hardwrap.DefaultSettings())
+
+		require.NoError(t, err, "%s: a path outside the document set is not this rule's business", name)
+		assert.Empty(t, diags, name)
+	}
+}
+
+// TestADocumentTheRunDOESReadStillMeetsEveryGuard is the in-scope sibling of
+// the case above, so the silence there is never mistaken for the guards having
+// been removed.
+func TestADocumentTheRunDOESReadStillMeetsEveryGuard(t *testing.T) {
+	t.Parallel()
+
+	for name, source := range map[string]string{
+		"past the size bound":   strings.Repeat("a", int(hardwrap.SizeLimit)+1),
+		"not text at all":       "\xff\xfe",
+		"nested past the bound": strings.Repeat("> ", 200) + "x",
+	} {
+		_, err := hardwrap.Diagnostics("notes.md", hardwrap.Source(source), hardwrap.DefaultSettings())
+
+		require.Error(t, err, "%s: a document this run reads is still held to every bound", name)
+	}
+}

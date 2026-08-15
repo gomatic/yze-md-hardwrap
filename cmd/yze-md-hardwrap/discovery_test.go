@@ -6,6 +6,8 @@ package main
 // proven there, once, rather than in every analyzer separately.
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	goyze "github.com/gomatic/go-yze"
@@ -98,4 +100,66 @@ func TestPrunedNamesEveryTreeItClaimsTo(t *testing.T) {
 	for _, name := range []string{"docs", "content", "internal", "cmd", "themes-guide"} {
 		assert.False(t, pruned(goyze.DirName(name)), "%s is this repository's", name)
 	}
+}
+
+// TestReportableKeepsOnlyADocumentOrATree pins the bound on the notice
+// this command emits for a path the walk could not read.
+//
+// The shared walk reaches its unreadable arms BEFORE it asks whether an
+// analyzer claims the path, so the list carries entries of any name and every
+// one of them became an error-severity `yze/hardwrap` finding. Two of the 9,633
+// findings a fleet sweep produced were a live ssh-agent socket and a dangling
+// `.go` symlink — a rule about where a paragraph's newline goes has nothing to
+// say about either, and neither has a remedy: an agent socket cannot be made
+// readable as markdown, and the notice carries the same flat rule id as the wrap
+// finding, so the only silence available switched off every genuine hard wrap in
+// the repository too. A TREE is kept whatever it is called, because a directory
+// nobody entered is where an unchecked document hides. Found by an adversarial
+// review.
+func TestReportableKeepsOnlyADocumentOrATree(t *testing.T) {
+	dir := t.TempDir()
+	tree := filepath.Join(dir, "locked")
+	require.NoError(t, os.Mkdir(tree, 0o750))
+	link := filepath.Join(dir, "dangling.go")
+	require.NoError(t, os.Symlink(filepath.Join(dir, "nothing"), link))
+
+	kept := reportable([]string{
+		filepath.Join(dir, "notes.md"),
+		filepath.Join(dir, "pipe.sock"),
+		filepath.Join(dir, "main.go"),
+		filepath.Join(dir, "agent", "s.kj0FQdwS7s.agent.8YCOgTjLis"),
+		filepath.Join(dir, "LICENSE.md"),
+		link,
+		tree,
+	}, hardwrap.DefaultDocuments())
+
+	assert.Equal(t, []string{filepath.Join(dir, "notes.md"), tree}, kept,
+		"a document the gate could not open and a tree nobody entered; nothing else is this rule's business")
+}
+
+// TestAnUnreadableDocumentFollowsTheRunsConfiguration pins that the bound moves
+// with the run's document set rather than with a list of its own, so a
+// repository that opted `.txt` in hears about a `.txt` file the gate could not
+// read.
+func TestAnUnreadableDocumentFollowsTheRunsConfiguration(t *testing.T) {
+	docs, err := hardwrap.ConfiguredDocuments(func(name string) string {
+		return map[string]string{"YZE_HARDWRAP_DOCUMENTS": ".txt"}[name]
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"notes.txt"}, reportable([]string{"notes.txt", "main.go"}, docs))
+}
+
+// TestIsTreeAsksTheFilesystemRatherThanTheName pins that the kind is asked of the FILESYSTEM
+// rather than read off the name: a link to a directory is a tree the walk
+// declined to enter, and a link resolving to nothing is not a tree at all.
+func TestIsTreeAsksTheFilesystemRatherThanTheName(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	require.NoError(t, os.Mkdir(target, 0o750))
+	toTree := filepath.Join(dir, "elsewhere.go")
+	require.NoError(t, os.Symlink(target, toTree))
+
+	assert.Equal(t, []string{toTree}, reportable([]string{toTree}, hardwrap.DefaultDocuments()),
+		"a link to a tree is a tree, whatever it is named")
 }

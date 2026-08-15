@@ -62,7 +62,8 @@ func report(args []string) error {
 	// finding against that file rather than the run's error. What the walk could
 	// not read goes THROUGH it rather than beside it, so one limit governs
 	// everything the run emits.
-	return json.NewEncoder(stdout).Encode(hardwrap.Report(readFile, found.Files, found.Unreadable, run))
+	return json.NewEncoder(stdout).Encode(
+		hardwrap.Report(readFile, found.Files, reportable(found.Unreadable, run.Documents), run))
 }
 
 // fail prints err to stderr and returns the failure exit code.

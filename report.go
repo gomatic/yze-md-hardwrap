@@ -41,11 +41,24 @@ type FileReader func(path string) ([]byte, error)
 //
 // unreadable is what the walk could not read: a directory it could not enter,
 // and a file it could not have read had it tried — a FIFO, a device, a link
-// resolving to nothing. Each is REPORTED rather than skipped, because a path
-// the gate cannot open is where an unchecked one would hide, and it is reported
-// THROUGH this function rather than beside it: prepending those findings after
-// the fact put them outside the run's limit, so a tree of unreadable
-// directories was the one unbounded path left in a bounded report.
+// resolving to nothing. One this run WOULD have read is REPORTED rather than
+// skipped, because a document the gate cannot open is where an unchecked one
+// would hide, and it is reported THROUGH this function rather than beside it:
+// prepending those findings after the fact put them outside the run's limit, so
+// a tree of unreadable directories was the one unbounded path left in a bounded
+// report.
+//
+// WHICH of them arrive here is the caller's decision and not this function's,
+// and that split is deliberate. The shared walk reaches its unreadable arms
+// BEFORE it asks whether an analyzer claims the path, so the list it hands back
+// carries entries of any name — a live ssh-agent socket and a dangling `.go`
+// symlink were two of the error-severity `yze/hardwrap` findings a fleet sweep
+// produced, and neither has a remedy an author can take. Bounding that needs
+// two facts: whether this run would have read the path, which is the analyzer's
+// [Documents], and whether the path is a TREE nobody looked inside, which only
+// the filesystem knows. The command holds both — see its `reportable` — and
+// this function reports what it is given, so one limit still governs everything
+// the run emits. Found by an adversarial review.
 func Report(read FileReader, files, unreadable []string, settings Settings) goyze.Report {
 	// Started EMPTY rather than nil, so a clean run encodes as
 	// `{"diagnostics":[]}` — the same shape as a run with findings, rather than

@@ -138,6 +138,67 @@ func TestASetNamingNothingReadsMarkdown(t *testing.T) {
 	}
 }
 
+// TestConfiguredDocumentsCannotTurnTheDefaultSetOff drives the function its own
+// doc comment makes claims about, and asserts the two of them that no other
+// test states.
+//
+// The first is the additive one, in the direction that matters: the tests above
+// prove the defaults survive a configuration naming something ELSE, which is
+// the easy half. The half worth pinning is a configuration that names markdown
+// itself — the only shape that could plausibly be read as "replace the set with
+// this" — and the property is asserted as a SUPERSET over every default key
+// rather than by naming .md twice, so a default added later is covered by this
+// test on the day it is added. A configuration that could turn markdown off
+// would be an opt-out from the whole rule, written in a repository's own file,
+// which the rule never reads and no reviewer ever sees.
+//
+// Each case also asserts the file its OWN configuration newly reads, which is
+// the other half of "plus whatever this run was told to read as well". Without
+// it the table ran one set of assertions six times and observed nothing that
+// made a case different: dropping the insertion entirely — parsing the list,
+// refusing a path, adding nothing — left this test green while a repository
+// that opted into .txt was silently read for markdown only. Found by an
+// adversarial review of this test.
+//
+// The second claim is that an entry this run cannot apply is an ERROR and not
+// an entry dropped: the sentinel is matched with errors.Is rather than by
+// asking whether something went wrong, and the returned set is nil so no run
+// can proceed on a configuration that was only partly applied.
+func TestConfiguredDocumentsCannotTurnTheDefaultSetOff(t *testing.T) {
+	t.Parallel()
+
+	for name, adds := range map[string]struct{ configured, nowRead string }{
+		"markdown by both its extensions": {".md, .markdown", "README.md"},
+		"markdown cased the other way":    {".MD", "UPPER.MD"},
+		"markdown beside something else":  {".md, .txt", "notes.txt"},
+		"nothing at all":                  {"", "README.md"},
+		"an unrelated extension":          {".rst", "guide.rst"},
+		"a whole name":                    {"NOTES", "a/NOTES"},
+	} {
+		docs, err := hardwrap.ConfiguredDocuments(
+			environment(map[string]string{documentsVariable: adds.configured}),
+		)
+
+		require.NoError(t, err, name)
+		for key := range hardwrap.DefaultDocuments() {
+			assert.True(t, docs[key], "%s leaves every default entry in place", name)
+		}
+		assert.True(t, docs.Reads("README.md"), "%s still reads markdown", name)
+		assert.True(t, docs.Reads("docs/guide.markdown"), "%s still reads markdown's long spelling", name)
+		assert.True(t, docs.Reads(hardwrap.Path(adds.nowRead)),
+			"%s reads %s, so the entry was ADDED and not merely parsed", name, adds.nowRead)
+	}
+
+	docs, err := hardwrap.ConfiguredDocuments(
+		environment(map[string]string{documentsVariable: ".txt, docs/notes.md"}),
+	)
+
+	require.ErrorIs(t, err, hardwrap.ErrDocumentPath,
+		"an entry naming a path is refused with the shared sentinel, not with some other error")
+	assert.Nil(t, docs,
+		"and the whole configuration is refused: a partly-applied one is a run believing the opposite of what it does")
+}
+
 // TestOnlyALicenceIsExemptByItsName pins the licence table in the direction
 // nothing in this repository pinned it: ADDING a stem.
 //

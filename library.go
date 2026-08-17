@@ -7,4 +7,4 @@
 
 //go:build library_marker
 
-package hardwrap_test
+package hardwrap
